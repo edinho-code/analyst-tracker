@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(source venv/bin/activate)",
+      "Bash(python analyst_tracker_setup.py)",
+      "Bash(python3 analyst_tracker_setup.py)",
+      "Read(//opt/homebrew/**)",
+      "Read(//Users/edersonsouto/.pyenv/**)",
+      "Bash(grep -l \"from __future__\" /Users/edersonsouto/Documents/analyst-tracker/*.py)",
+      "Bash(python3 price_fetcher.py)",
+      "Bash(pip3 install yfinance pandas)",
+      "Bash(pip3 install requests beautifulsoup4)",
+      "Bash(python3 collector_us.py --since 2022-01-01)",
+      "Bash(python3 scoring_engine.py)",
+      "Bash(pip3 install streamlit plotly)",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(lsof -ti :8501)",
+      "Bash(xargs kill -9)",
+      "Bash(sqlite3 analyst_tracker.db \"SELECT status, COUNT\\(*\\) FROM positions GROUP BY status;\")",
+      "Bash(sqlite3 analyst_tracker.db \"SELECT close_date IS NULL as is_open, COUNT\\(*\\) FROM positions GROUP BY is_open;\")",
+      "Bash(sqlite3 analyst_tracker.db \"SELECT s.name, s.country, COUNT\\(DISTINCT a.id\\) as analysts, COUNT\\(p.id\\) as positions FROM sources s LEFT JOIN analysts a ON a.source_id = s.id LEFT JOIN positions p ON p.analyst_id = a.id GROUP BY s.id ORDER BY positions DESC LIMIT 20;\")",
+      "Bash(sqlite3 analyst_tracker.db \"SELECT COUNT\\(DISTINCT s.id\\) as sources, COUNT\\(DISTINCT a.id\\) as analysts, COUNT\\(p.id\\) as positions FROM sources s JOIN analysts a ON a.source_id = s.id JOIN positions p ON p.analyst_id = a.id;\")",
+      "Bash(sqlite3 analyst_tracker.db \"SELECT p.close_date IS NULL as open, COUNT\\(*\\) FROM positions p JOIN performance perf ON perf.position_id = p.id GROUP BY open;\")",
+      "Bash(sqlite3 analyst_tracker.db \"SELECT ticker, name, exchange, sector, country, currency FROM assets WHERE country=''US'' ORDER BY ticker;\")",
+      "Bash(python3 collector_br.py --all --since 2022-01-01)",
+      "Bash(python3 -c \"import anthropic; print\\(anthropic.__version__\\)\")",
+      "Bash(pip3 install anthropic)",
+      "Bash(python3 risk_engine.py)",
+      "Bash(python3 risk_engine.py --calc-all --days 365)",
+      "Bash(python3 -c \":*)",
+      "Bash(python3 scoring_engine.py --dry-run)",
+      "Bash(sqlite3 analyst_tracker.db \":*)",
+      "Bash(python3 scoring_engine.py --auto-close)",
+      "Bash(gh auth status)",
+      "Bash(git init)",
+      "Bash(git add .)"
+    ]
+  }
+}

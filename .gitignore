@@ -1,0 +1,19 @@
+# Banco de dados (gerado pelo pipeline)
+*.db
+*.db-shm
+*.db-wal
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# macOS
+.DS_Store
+
+# Streamlit
+.streamlit/
+
+# Temporários
+/tmp/

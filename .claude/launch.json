@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Analyst Tracker Dashboard",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["/tmp/run_analyst_dashboard.py"],
+      "port": 8501
+    }
+  ]
+}
