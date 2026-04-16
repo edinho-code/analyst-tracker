@@ -623,8 +623,8 @@ elif "Portfólio" in page:
         st.markdown("### Resultado Acumulado")
         mc1, mc2, mc3, mc4 = st.columns(4)
         mc1.metric("Retorno Total", f"{result['cumulative_return']:+.1f}%")
-        mc2.metric("Benchmark Total", f"{result['cumulative_bench']:+.1f}%")
-        mc3.metric("Alpha Total", f"{result['cumulative_alpha']:+.1f}%")
+        mc2.metric("Benchmark Total", f"{result['cumulative_bench']:+.1f}%" if result['cumulative_bench'] is not None else "—")
+        mc3.metric("Alpha Total", f"{result['cumulative_alpha']:+.1f}%" if result['cumulative_alpha'] is not None else "—")
         mc4.metric("Total Posições", result["total_positions"])
 
         st.markdown("---")

@@ -770,8 +770,6 @@ def simulate_portfolio(
         if n == 0:
             continue
 
-        total_positions += n
-
         # Calculate equal-weight portfolio return
         returns = []
         best_call  = None
@@ -810,6 +808,8 @@ def simulate_portfolio(
         if not returns:
             continue
 
+        total_positions += len(returns)
+
         # Equal-weight average return for the year
         avg_return = sum(returns) / len(returns)
 
@@ -832,7 +832,7 @@ def simulate_portfolio(
 
         yearly_results.append({
             "year":             yr,
-            "n_positions":      n,
+            "n_positions":      len(returns),
             "return_pct":       round(avg_return, 2),
             "benchmark_return": round(bench_return, 2) if bench_return is not None else None,
             "alpha":            alpha,
@@ -846,13 +846,27 @@ def simulate_portfolio(
 
     cumulative_return = round((cumulative_value - 1) * 100, 2)
 
-    # Cumulative benchmark
-    all_years = [r["benchmark_return"] for r in yearly_results if r["benchmark_return"] is not None]
-    cumulative_bench = 1.0
-    for br in all_years:
-        cumulative_bench *= (1 + br / 100)
-    cumulative_bench_return = round((cumulative_bench - 1) * 100, 2)
-    cumulative_alpha = round(cumulative_return - cumulative_bench_return, 2)
+    # Cumulative benchmark — only compare over years with benchmark data
+    has_bench = [r for r in yearly_results if r["benchmark_return"] is not None]
+    if has_bench and len(has_bench) == len(yearly_results):
+        # All years have benchmark data — straightforward comparison
+        cumulative_bench = 1.0
+        for r in has_bench:
+            cumulative_bench *= (1 + r["benchmark_return"] / 100)
+        cumulative_bench_return = round((cumulative_bench - 1) * 100, 2)
+        cumulative_alpha = round(cumulative_return - cumulative_bench_return, 2)
+    elif has_bench:
+        # Some years missing benchmark — compute alpha only over matched years
+        matched_port = 1.0
+        matched_bench = 1.0
+        for r in has_bench:
+            matched_port  *= (1 + r["return_pct"] / 100)
+            matched_bench *= (1 + r["benchmark_return"] / 100)
+        cumulative_bench_return = round((matched_bench - 1) * 100, 2)
+        cumulative_alpha = round((matched_port - 1) * 100 - cumulative_bench_return, 2)
+    else:
+        cumulative_bench_return = None
+        cumulative_alpha = None
 
     return {
         "years":              yearly_results,
@@ -954,8 +968,10 @@ def print_portfolio(analyst_name: str):
 
     print(f"  {'─'*80}")
     print(f"  Retorno cumulativo:  {result['cumulative_return']:+.1f}%")
-    print(f"  Benchmark cumulativo: {result['cumulative_bench']:+.1f}%")
-    print(f"  Alpha cumulativo:    {result['cumulative_alpha']:+.1f}%")
+    bench_str = f"{result['cumulative_bench']:+.1f}%" if result['cumulative_bench'] is not None else "—"
+    alpha_str = f"{result['cumulative_alpha']:+.1f}%" if result['cumulative_alpha'] is not None else "—"
+    print(f"  Benchmark cumulativo: {bench_str}")
+    print(f"  Alpha cumulativo:    {alpha_str}")
     print(f"  Total de posições:   {result['total_positions']}")
     print(f"{'═'*80}\n")
 
