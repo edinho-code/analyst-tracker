@@ -1,31 +1,31 @@
 """
 Analyst Tracker — Risk Engine
 ================================
-Calcula a probabilidade calibrada de uma recomendação estar certa
-ANTES de você seguir ela — o diferencial real do produto.
+Calculates the calibrated probability of a recommendation being correct
+BEFORE you follow it — the real product differentiator.
 
-Diferente do scoring_engine que avalia o passado, o risk_engine
-responde a pergunta: "dado o que sei sobre esse analista e esse contexto,
-qual a probabilidade de essa call específica estar certa?"
+Unlike the scoring_engine which evaluates the past, the risk_engine
+answers the question: "given what I know about this analyst and this context,
+what is the probability that this specific call is correct?"
 
-Dimensões do modelo:
-  1. Analista × Ativo      — histórico específico desse analista nesse ticker
-  2. Analista × Setor      — se sem histórico no ativo, como vai no setor?
-  3. Magnitude do upside   — calls de +50% têm taxa de acerto muito menor
-  4. Consenso vs contrarian — call alinhada ou na contramão do mercado?
-  5. Timing/recência        — há quanto tempo não revisa? call velha perde força
-  6. Contexto de volatilidade — analista acerta mais em bull ou bear market?
-  7. Volume de cobertura    — analista com 3 calls tem muito mais incerteza
+Model dimensions:
+  1. Analyst × Asset       — specific history of this analyst on this ticker
+  2. Analyst × Sector      — if no history on asset, how does analyst perform in sector?
+  3. Upside magnitude      — calls of +50% have a much lower hit rate
+  4. Consensus vs contrarian — call aligned or against the market?
+  5. Timing/recency         — how long since last revision? old calls lose strength
+  6. Volatility context     — does analyst perform better in bull or bear market?
+  7. Coverage volume        — analyst with 3 calls has much more uncertainty
 
-Output: probabilidade calibrada (0–100%) + breakdown por dimensão + rating de confiança
+Output: calibrated probability (0–100%) + breakdown by dimension + confidence rating
 
-Uso:
+Usage:
     python risk_engine.py --ticker NVDA --analyst "Dan Ives" --direction buy --target 300 --price 182
     python risk_engine.py --ticker VALE3 --analyst "BTG Pactual" --direction buy --target 85 --price 65
-    python risk_engine.py --calc-all          # calcula risk profiles de todas as calls recentes
-    python risk_engine.py --profile "Dan Ives" # perfil de risco completo de um analista
+    python risk_engine.py --calc-all          # calculate risk profiles for all recent calls
+    python risk_engine.py --profile "Dan Ives" # complete risk profile of an analyst
 
-Dependências:
+Dependencies:
     pip install pandas scipy
 """
 
@@ -41,40 +41,40 @@ from typing import Optional
 try:
     import pandas as pd
 except ImportError:
-    print("❌ Rode: pip install pandas")
+    print("❌ Run: pip install pandas")
     sys.exit(1)
 
 DB_PATH = "analyst_tracker.db"
 
 # ─────────────────────────────────────────────
-# PESOS DO MODELO
-# Soma = 1.0
+# MODEL WEIGHTS
+# Sum = 1.0
 # ─────────────────────────────────────────────
 
 WEIGHTS = {
-    "analyst_asset":    0.30,   # histórico específico analista × ativo
-    "analyst_sector":   0.20,   # histórico analista × setor (fallback)
-    "magnitude":        0.20,   # tamanho do upside implícito
-    "consensus":        0.10,   # alinhamento com consenso de mercado
-    "recency":          0.10,   # quão recente é a call
-    "volatility_fit":   0.10,   # analista acerta em regime de vol atual?
+    "analyst_asset":    0.30,   # specific history analyst × asset
+    "analyst_sector":   0.20,   # analyst history × sector (fallback)
+    "magnitude":        0.20,   # implied upside magnitude
+    "consensus":        0.10,   # alignment with market consensus
+    "recency":          0.10,   # how recent is the call
+    "volatility_fit":   0.10,   # does analyst succeed in current vol regime?
 }
 
-# Mínimo de calls históricas para usar o dado com confiança
+# Minimum historical calls to use data with confidence
 MIN_CALLS_CONFIDENT  = 10
 MIN_CALLS_MODERATE   = 3
 
-# Upside "normal" de mercado — calls além disso têm penalidade
+# "Normal" market upside — calls beyond this have penalty
 NORMAL_UPSIDE_PCT    = 20.0
-MAX_RELIABLE_UPSIDE  = 60.0   # acima de 60% de upside, penalidade máxima
+MAX_RELIABLE_UPSIDE  = 60.0   # above 60% upside, maximum penalty
 
-# Janela para "call recente" (dias)
+# Window for "recent call" (days)
 RECENT_WINDOW_DAYS   = 90
 STALE_WINDOW_DAYS    = 365
 
 
 # ─────────────────────────────────────────────
-# CONEXÃO
+# CONNECTION
 # ─────────────────────────────────────────────
 
 def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
@@ -85,7 +85,7 @@ def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
 
 
 # ─────────────────────────────────────────────
-# DIMENSÃO 1 — Analista × Ativo
+# DIMENSION 1 — Analyst × Asset
 # ─────────────────────────────────────────────
 
 def score_analyst_asset(
@@ -95,8 +95,8 @@ def score_analyst_asset(
     direction: str
 ) -> dict:
     """
-    Probabilidade baseada no histórico específico desse analista nesse ativo.
-    Retorna score (0–1), n_calls, confidence_weight.
+    Probability based on specific history of this analyst on this asset.
+    Returns score (0–1), n_calls, confidence_weight.
     """
     cursor = conn.cursor()
     cursor.execute(
@@ -118,16 +118,16 @@ def score_analyst_asset(
     total = row["total"] or 0
 
     if total == 0:
-        return {"score": 0.5, "n": 0, "weight": 0.3, "label": "sem histórico neste ativo"}
+        return {"score": 0.5, "n": 0, "weight": 0.3, "label": "no history on this asset"}
 
     avg_dir      = row["avg_dir"]      or 0.5
     avg_dir_same = row["avg_dir_same"] or avg_dir
 
-    # Usar avg_dir_same (performance em calls do mesmo tipo — buy/sell)
-    # quando há dados suficientes
+    # Use avg_dir_same (performance on same type of calls — buy/sell)
+    # when there is sufficient data
     score = avg_dir_same if row["same_dir"] and row["same_dir"] >= 2 else avg_dir
 
-    # Peso de confiança baseado no volume de dados
+    # Confidence weight based on data volume
     if total >= MIN_CALLS_CONFIDENT:
         weight = 1.0
     elif total >= MIN_CALLS_MODERATE:
@@ -135,12 +135,12 @@ def score_analyst_asset(
     else:
         weight = 0.3
 
-    label = f"{total} calls hist. neste ativo | dir score médio: {score:.2f}"
+    label = f"{total} hist. calls on this asset | avg dir score: {score:.2f}"
     return {"score": score, "n": total, "weight": weight, "label": label}
 
 
 # ─────────────────────────────────────────────
-# DIMENSÃO 2 — Analista × Setor
+# DIMENSION 2 — Analyst × Sector
 # ─────────────────────────────────────────────
 
 def score_analyst_sector(
@@ -150,11 +150,11 @@ def score_analyst_sector(
     direction: str
 ) -> dict:
     """
-    Probabilidade baseada no histórico do analista no setor do ativo.
-    Fallback quando não há histórico no ativo específico.
+    Probability based on analyst's history in the asset's sector.
+    Fallback when there is no history on the specific asset.
     """
     if not sector:
-        return {"score": 0.5, "n": 0, "weight": 0.2, "label": "setor desconhecido"}
+        return {"score": 0.5, "n": 0, "weight": 0.2, "label": "unknown sector"}
 
     cursor = conn.cursor()
     cursor.execute(
@@ -175,7 +175,7 @@ def score_analyst_sector(
     total = row["total"] or 0
 
     if total == 0:
-        return {"score": 0.5, "n": 0, "weight": 0.1, "label": f"sem histórico em {sector}"}
+        return {"score": 0.5, "n": 0, "weight": 0.1, "label": f"no history in {sector}"}
 
     avg_dir_same = row["avg_dir_same"] or row["avg_dir"] or 0.5
     score = avg_dir_same
@@ -187,12 +187,12 @@ def score_analyst_sector(
     else:
         weight = 0.2
 
-    label = f"{total} calls em {sector} | dir score médio: {score:.2f}"
+    label = f"{total} calls in {sector} | avg dir score: {score:.2f}"
     return {"score": score, "n": total, "weight": weight, "label": label}
 
 
 # ─────────────────────────────────────────────
-# DIMENSÃO 3 — Magnitude do Upside
+# DIMENSION 3 — Upside Magnitude
 # ─────────────────────────────────────────────
 
 def score_magnitude(
@@ -201,15 +201,15 @@ def score_magnitude(
     price_target: Optional[float]
 ) -> dict:
     """
-    Penaliza calls com upside/downside implícito muito alto.
-    Historicamente, calls de +50% têm taxa de acerto muito menor.
+    Penalizes calls with very high implied upside/downside.
+    Historically, +50% calls have a much lower hit rate.
 
-    Curva: score = 1.0 para upside <= 20%
-                   decai linearmente até 0.4 em 60%+
+    Curve: score = 1.0 for upside <= 20%
+                   decays linearly to 0.4 at 60%+
     """
     if not price_target or not price_current or price_current <= 0:
         return {"score": 0.65, "upside_pct": None, "weight": 0.5,
-                "label": "sem preço-alvo — upside desconhecido"}
+                "label": "no price target — unknown upside"}
 
     if direction == "buy":
         upside_pct = ((price_target - price_current) / price_current) * 100
@@ -218,29 +218,29 @@ def score_magnitude(
     else:
         return {"score": 0.65, "upside_pct": 0, "weight": 0.5, "label": "hold — magnitude N/A"}
 
-    # Penalidade para upsides muito agressivos
+    # Penalty for very aggressive upsides
     if upside_pct <= 0:
-        # Target abaixo do preço atual em call de buy — sinal ruim
+        # Target below current price on buy call — bad signal
         score = 0.2
-        label = f"target inválido ({upside_pct:.1f}% upside)"
+        label = f"invalid target ({upside_pct:.1f}% upside)"
     elif upside_pct <= NORMAL_UPSIDE_PCT:
         score = 1.0
-        label = f"+{upside_pct:.1f}% upside — moderado ✅"
+        label = f"+{upside_pct:.1f}% upside — moderate ✅"
     elif upside_pct <= MAX_RELIABLE_UPSIDE:
-        # Decaimento linear entre 20% e 60%
+        # Linear decay between 20% and 60%
         decay = (upside_pct - NORMAL_UPSIDE_PCT) / (MAX_RELIABLE_UPSIDE - NORMAL_UPSIDE_PCT)
         score = 1.0 - (0.6 * decay)
-        label = f"+{upside_pct:.1f}% upside — agressivo ⚠️"
+        label = f"+{upside_pct:.1f}% upside — aggressive ⚠️"
     else:
         score = 0.4
-        label = f"+{upside_pct:.1f}% upside — muito agressivo 🔴"
+        label = f"+{upside_pct:.1f}% upside — very aggressive 🔴"
 
     return {"score": round(score, 3), "upside_pct": round(upside_pct, 1),
             "weight": 1.0, "label": label}
 
 
 # ─────────────────────────────────────────────
-# DIMENSÃO 4 — Consenso vs Contrarian
+# DIMENSION 4 — Consensus vs Contrarian
 # ─────────────────────────────────────────────
 
 def score_consensus(
@@ -250,11 +250,11 @@ def score_consensus(
     days: int = 90
 ) -> dict:
     """
-    Verifica se a call está alinhada com o consenso recente ou é contrarian.
+    Checks if the call is aligned with recent consensus or is contrarian.
 
-    Calls alinhadas com consenso têm win rate ligeiramente maior,
-    mas calls contrarian corretas têm retorno muito maior.
-    Penalizamos levemente calls muito contrarian por ter menor base rate.
+    Consensus-aligned calls have a slightly higher win rate,
+    but correct contrarian calls have much higher returns.
+    We slightly penalize very contrarian calls for having a lower base rate.
     """
     since = (date.today() - timedelta(days=days)).isoformat()
 
@@ -274,7 +274,7 @@ def score_consensus(
     total = row["total"] or 0
     if total < 3:
         return {"score": 0.65, "consensus_pct": None, "weight": 0.3,
-                "label": "consenso insuficiente (< 3 calls recentes)"}
+                "label": "insufficient consensus (< 3 recent calls)"}
 
     buys  = row["buys"]  or 0
     sells = row["sells"] or 0
@@ -287,69 +287,69 @@ def score_consensus(
     else:
         aligned_pct = holds / total
 
-    # Score: calls com 60-80% de consenso têm melhor equilíbrio
-    # Muito consensual (>90%): levemente penalizado (já precificado)
-    # Muito contrarian (<20%): penalizado (menor base rate)
+    # Score: calls with 60-80% consensus have the best balance
+    # Very consensual (>90%): slightly penalized (already priced in)
+    # Very contrarian (<20%): penalized (lower base rate)
     if aligned_pct >= 0.9:
         score = 0.70
-        label = f"herd call — {aligned_pct:.0%} do mercado concorda ⚠️ (pode já estar precificado)"
+        label = f"herd call — {aligned_pct:.0%} of market agrees ⚠️ (may already be priced in)"
     elif aligned_pct >= 0.60:
         score = 0.80
-        label = f"consenso sólido — {aligned_pct:.0%} concorda ✅"
+        label = f"solid consensus — {aligned_pct:.0%} agrees ✅"
     elif aligned_pct >= 0.35:
         score = 0.70
-        label = f"split — {aligned_pct:.0%} concorda, mercado dividido"
+        label = f"split — {aligned_pct:.0%} agrees, market divided"
     elif aligned_pct >= 0.15:
         score = 0.55
-        label = f"contrarian — apenas {aligned_pct:.0%} concorda ⚠️"
+        label = f"contrarian — only {aligned_pct:.0%} agrees ⚠️"
     else:
         score = 0.40
-        label = f"muito contrarian — {aligned_pct:.0%} concorda 🔴 (call solitária)"
+        label = f"very contrarian — {aligned_pct:.0%} agrees 🔴 (lone call)"
 
     return {"score": score, "consensus_pct": round(aligned_pct, 3),
             "weight": 0.7, "label": label}
 
 
 # ─────────────────────────────────────────────
-# DIMENSÃO 5 — Recência da Call
+# DIMENSION 5 — Call Recency
 # ─────────────────────────────────────────────
 
 def score_recency(rec_date: Optional[str]) -> dict:
     """
-    Calls mais recentes são mais confiáveis.
-    Call de 2 anos atrás sem revisão = contexto mudou muito.
+    More recent calls are more reliable.
+    A 2-year-old call without revision = context has changed significantly.
     """
     if not rec_date:
         return {"score": 0.60, "days_old": None, "weight": 0.5,
-                "label": "data da call desconhecida"}
+                "label": "unknown call date"}
 
     try:
         rec_dt  = datetime.strptime(rec_date, "%Y-%m-%d").date()
         days_old = (date.today() - rec_dt).days
     except ValueError:
-        return {"score": 0.60, "days_old": None, "weight": 0.5, "label": "data inválida"}
+        return {"score": 0.60, "days_old": None, "weight": 0.5, "label": "invalid date"}
 
     if days_old <= 7:
         score = 1.0
-        label = f"call de {days_old}d atrás — fresquíssima ✅"
+        label = f"call {days_old}d ago — very fresh ✅"
     elif days_old <= RECENT_WINDOW_DAYS:
         score = 0.90
-        label = f"call de {days_old}d atrás — recente ✅"
+        label = f"call {days_old}d ago — recent ✅"
     elif days_old <= 180:
         score = 0.75
-        label = f"call de {days_old}d atrás — moderadamente recente"
+        label = f"call {days_old}d ago — moderately recent"
     elif days_old <= STALE_WINDOW_DAYS:
         score = 0.55
-        label = f"call de {days_old}d atrás — envelhecendo ⚠️"
+        label = f"call {days_old}d ago — aging ⚠️"
     else:
         score = 0.35
-        label = f"call de {days_old}d atrás — desatualizada 🔴"
+        label = f"call {days_old}d ago — outdated 🔴"
 
     return {"score": score, "days_old": days_old, "weight": 1.0, "label": label}
 
 
 # ─────────────────────────────────────────────
-# DIMENSÃO 6 — Fit com Volatilidade
+# DIMENSION 6 — Volatility Fit
 # ─────────────────────────────────────────────
 
 def score_volatility_fit(
@@ -358,15 +358,15 @@ def score_volatility_fit(
     asset_id: int
 ) -> dict:
     """
-    Verifica se o analista tende a acertar mais em períodos de alta ou baixa volatilidade,
-    e compara com a volatilidade atual do ativo (proxy: desvio padrão dos últimos 30 dias).
+    Checks if the analyst tends to be more accurate in high or low volatility periods,
+    and compares with the asset's current volatility (proxy: std dev of last 30 days).
 
-    Proxy de volatilidade: std de retornos diários dos últimos 30 dias.
+    Volatility proxy: std of daily returns over last 30 days.
     High vol: std > 2.5% | Low vol: std < 1.0%
     """
     cursor = conn.cursor()
 
-    # Volatilidade atual do ativo (últimos 30 dias)
+    # Current asset volatility (last 30 days)
     cursor.execute(
         """SELECT close, date FROM price_history
            WHERE asset_id = ?
@@ -396,10 +396,10 @@ def score_volatility_fit(
 
     if vol_regime == "unknown":
         return {"score": 0.60, "current_vol": None, "weight": 0.3,
-                "label": "volatilidade atual desconhecida (sem preços)"}
+                "label": "current volatility unknown (no prices)"}
 
-    # Performance histórica do analista em diferentes regimes
-    # Proxy: calls feitas em períodos de maior/menor movimento
+    # Analyst's historical performance in different regimes
+    # Proxy: calls made during periods of greater/lesser movement
     cursor.execute(
         """SELECT
                AVG(perf.direction_score) AS avg_dir,
@@ -413,21 +413,21 @@ def score_volatility_fit(
 
     if not overall or not overall["avg_dir"]:
         return {"score": 0.60, "current_vol": current_vol, "weight": 0.3,
-                "label": f"vol atual: {current_vol:.2f}% — sem histórico suficiente"}
+                "label": f"current vol: {current_vol:.2f}% — insufficient history"}
 
-    # Sem histórico detalhado de vol, usar um ajuste simples:
-    # em alta volatilidade, analistas em geral têm ~15% menos acerto
+    # Without detailed vol history, use a simple adjustment:
+    # in high volatility, analysts generally have ~15% less accuracy
     base_score = overall["avg_dir"]
 
     if vol_regime == "high":
         adj_score = base_score * 0.85
-        label = f"vol atual alta ({current_vol:.2f}%/dia) — acerto tende a cair ⚠️"
+        label = f"high current vol ({current_vol:.2f}%/day) — accuracy tends to drop ⚠️"
     elif vol_regime == "medium":
         adj_score = base_score * 1.00
-        label = f"vol atual moderada ({current_vol:.2f}%/dia) — condições normais ✅"
+        label = f"moderate current vol ({current_vol:.2f}%/day) — normal conditions ✅"
     else:
         adj_score = base_score * 1.05
-        label = f"vol atual baixa ({current_vol:.2f}%/dia) — mercado calmo ✅"
+        label = f"low current vol ({current_vol:.2f}%/day) — calm market ✅"
 
     adj_score = max(0.0, min(1.0, adj_score))
     weight    = 0.7 if overall["total"] >= MIN_CALLS_MODERATE else 0.3
@@ -437,15 +437,15 @@ def score_volatility_fit(
 
 
 # ─────────────────────────────────────────────
-# CALIBRAÇÃO FINAL
+# FINAL CALIBRATION
 # ─────────────────────────────────────────────
 
 def calibrate_probability(dimensions: dict) -> float:
     """
-    Combina os scores das 6 dimensões em uma probabilidade final calibrada.
+    Combines scores from the 6 dimensions into a final calibrated probability.
 
-    Usa média ponderada dos scores × peso_dimensão × weight_confiança.
-    O weight_confiança reflete o quanto de dados reais temos para aquela dimensão.
+    Uses weighted average of scores × dimension_weight × confidence_weight.
+    The confidence_weight reflects how much real data we have for that dimension.
     """
     total_weight = 0.0
     weighted_sum = 0.0
@@ -453,7 +453,7 @@ def calibrate_probability(dimensions: dict) -> float:
     for dim_name, dim_weight in WEIGHTS.items():
         dim = dimensions.get(dim_name, {})
         score  = dim.get("score", 0.5)
-        conf_w = dim.get("weight", 0.5)   # confiança interna da dimensão
+        conf_w = dim.get("weight", 0.5)   # internal confidence of dimension
 
         effective_weight = dim_weight * conf_w
         weighted_sum    += score * effective_weight
@@ -464,8 +464,8 @@ def calibrate_probability(dimensions: dict) -> float:
 
     raw_prob = weighted_sum / total_weight
 
-    # Calibração Platt — suaviza extremos (evita 95%+ ou <10%)
-    # Mapeamento: [0, 1] → [0.15, 0.88]
+    # Platt calibration — smooths extremes (avoids 95%+ or <10%)
+    # Mapping: [0, 1] → [0.15, 0.88]
     calibrated = 0.15 + (raw_prob * 0.73)
 
     return round(calibrated, 4)
@@ -473,27 +473,27 @@ def calibrate_probability(dimensions: dict) -> float:
 
 def confidence_rating(prob: float, n_calls: int) -> tuple[str, str]:
     """
-    Converte probabilidade + volume de dados em rating qualitativo.
-    Retorna (rating, emoji).
+    Converts probability + data volume into qualitative rating.
+    Returns (rating, emoji).
     """
-    # Incerteza alta quando poucos dados
+    # High uncertainty when few data points
     if n_calls < MIN_CALLS_MODERATE:
-        return "INCERTO", "⚪"
+        return "UNCERTAIN", "⚪"
 
     if prob >= 0.75:
-        return "ALTA", "🟢"
+        return "HIGH", "🟢"
     elif prob >= 0.62:
-        return "MODERADA-ALTA", "🟡"
+        return "MODERATE-HIGH", "🟡"
     elif prob >= 0.50:
-        return "MODERADA", "🟠"
+        return "MODERATE", "🟠"
     elif prob >= 0.38:
-        return "MODERADA-BAIXA", "🔴"
+        return "MODERATE-LOW", "🔴"
     else:
-        return "BAIXA", "🔴"
+        return "LOW", "🔴"
 
 
 # ─────────────────────────────────────────────
-# INTERFACE PRINCIPAL
+# MAIN INTERFACE
 # ─────────────────────────────────────────────
 
 def evaluate_call(
@@ -507,10 +507,10 @@ def evaluate_call(
     db_path: str = DB_PATH
 ) -> dict:
     """
-    Avalia o risco de uma call específica.
-    Retorna dict com probabilidade, breakdown por dimensão e rating.
+    Evaluates the risk of a specific call.
+    Returns dict with probability, breakdown by dimension and rating.
 
-    Exemplo:
+    Example:
         result = evaluate_call(
             ticker="NVDA",
             analyst_name="Dan Ives",
@@ -519,13 +519,13 @@ def evaluate_call(
             price_target=300.0,
             rec_date="2024-03-15"
         )
-        print(result["probability_pct"])  # ex: 67.3
-        print(result["rating"])           # ex: "MODERADA-ALTA"
+        print(result["probability_pct"])  # e.g.: 67.3
+        print(result["rating"])           # e.g.: "MODERATE-HIGH"
     """
     conn   = get_connection(db_path)
     cursor = conn.cursor()
 
-    # Buscar analyst_id
+    # Find analyst_id
     cursor.execute(
         "SELECT id FROM analysts WHERE name LIKE ?",
         (f"%{analyst_name}%",)
@@ -533,7 +533,7 @@ def evaluate_call(
     analyst_row = cursor.fetchone()
     analyst_id  = analyst_row["id"] if analyst_row else None
 
-    # Buscar asset_id + setor
+    # Find asset_id + sector
     cursor.execute(
         "SELECT id, sector, country FROM assets WHERE ticker = ?",
         (ticker.upper(),)
@@ -542,7 +542,7 @@ def evaluate_call(
     asset_id  = asset_row["id"]     if asset_row else None
     sector    = asset_row["sector"] if asset_row else None
 
-    # Total de posições históricas do analista
+    # Total historical positions of analyst
     n_calls_total = 0
     if analyst_id:
         cursor.execute(
@@ -551,53 +551,53 @@ def evaluate_call(
         )
         n_calls_total = cursor.fetchone()["n"] or 0
 
-    # ── Calcular cada dimensão ────────────────────────
+    # ── Calculate each dimension ──────────────────────
 
     dimensions = {}
 
-    # 1. Analista × Ativo
+    # 1. Analyst × Asset
     if analyst_id and asset_id:
         dimensions["analyst_asset"] = score_analyst_asset(conn, analyst_id, asset_id, direction)
     else:
         dimensions["analyst_asset"] = {
             "score": 0.5, "n": 0, "weight": 0.1,
-            "label": f"analista '{analyst_name}' ou ticker '{ticker}' não encontrado no banco"
+            "label": f"analyst '{analyst_name}' or ticker '{ticker}' not found in database"
         }
 
-    # 2. Analista × Setor
+    # 2. Analyst × Sector
     if analyst_id and sector:
         dimensions["analyst_sector"] = score_analyst_sector(conn, analyst_id, sector, direction)
     else:
         dimensions["analyst_sector"] = {
             "score": 0.5, "n": 0, "weight": 0.1,
-            "label": "sem dados de setor"
+            "label": "no sector data"
         }
 
-    # 3. Magnitude do upside
+    # 3. Upside magnitude
     dimensions["magnitude"] = score_magnitude(direction, price_current, price_target)
 
-    # 4. Consenso
+    # 4. Consensus
     if asset_id:
         dimensions["consensus"] = score_consensus(conn, asset_id, direction)
     else:
-        dimensions["consensus"] = {"score": 0.65, "weight": 0.2, "label": "ativo não encontrado"}
+        dimensions["consensus"] = {"score": 0.65, "weight": 0.2, "label": "asset not found"}
 
-    # 5. Recência
+    # 5. Recency
     dimensions["recency"] = score_recency(rec_date or date.today().isoformat())
 
-    # 6. Volatilidade
+    # 6. Volatility
     if analyst_id and asset_id:
         dimensions["volatility_fit"] = score_volatility_fit(conn, analyst_id, asset_id)
     else:
-        dimensions["volatility_fit"] = {"score": 0.60, "weight": 0.2, "label": "dados insuficientes"}
+        dimensions["volatility_fit"] = {"score": 0.60, "weight": 0.2, "label": "insufficient data"}
 
-    # ── Probabilidade final ───────────────────────────
+    # ── Final probability ─────────────────────────────
 
     probability = calibrate_probability(dimensions)
     prob_pct    = round(probability * 100, 1)
     rating, emoji = confidence_rating(probability, n_calls_total)
 
-    # Upside implícito
+    # Implied upside
     upside_pct = dimensions["magnitude"].get("upside_pct")
 
     result = {
@@ -624,33 +624,33 @@ def evaluate_call(
 
 
 def _print_result(r: dict):
-    """Imprime o resultado formatado no terminal."""
+    """Prints the formatted result to the terminal."""
     dir_icon = {"buy": "📈 BUY", "sell": "📉 SELL", "hold": "➡️  HOLD"}.get(r["direction"], r["direction"])
-    upside   = f"+{r['upside_pct']:.1f}%" if r["upside_pct"] else "sem target"
+    upside   = f"+{r['upside_pct']:.1f}%" if r["upside_pct"] else "no target"
 
     print(f"\n{'═'*62}")
     print(f"  🎯  RISK ASSESSMENT — Analyst Tracker")
     print(f"{'═'*62}")
-    print(f"  Analista:   {r['analyst']}")
-    print(f"  Call:       {r['ticker']} {dir_icon}  |  preço atual: ${r['price_current']:.2f}")
+    print(f"  Analyst:    {r['analyst']}")
+    print(f"  Call:       {r['ticker']} {dir_icon}  |  current price: ${r['price_current']:.2f}")
     if r["price_target"]:
         print(f"  Target:     ${r['price_target']:.2f}  ({upside})")
     if r["rec_date"]:
-        print(f"  Data:       {r['rec_date']}")
-    print(f"  Histórico:  {r['n_calls_history']} calls totais do analista no banco")
+        print(f"  Date:       {r['rec_date']}")
+    print(f"  History:    {r['n_calls_history']} total analyst calls in database")
     print(f"{'─'*62}")
-    print(f"\n  PROBABILIDADE DE ACERTO:  {r['probability_pct']:.1f}%  {r['rating_emoji']} {r['rating']}\n")
+    print(f"\n  HIT PROBABILITY:  {r['probability_pct']:.1f}%  {r['rating_emoji']} {r['rating']}\n")
     print(f"{'─'*62}")
-    print(f"  Breakdown por dimensão:")
+    print(f"  Breakdown by dimension:")
     print()
 
     dim_labels = {
-        "analyst_asset":  "Hist. Analista × Ativo",
-        "analyst_sector": "Hist. Analista × Setor",
-        "magnitude":      "Magnitude do upside",
-        "consensus":      "Alinhamento c/ consenso",
-        "recency":        "Recência da call",
-        "volatility_fit": "Fit com volatilidade",
+        "analyst_asset":  "Hist. Analyst × Asset",
+        "analyst_sector": "Hist. Analyst × Sector",
+        "magnitude":      "Upside Magnitude",
+        "consensus":      "Consensus Alignment",
+        "recency":        "Call Recency",
+        "volatility_fit": "Volatility Fit",
     }
 
     for key, label in dim_labels.items():
@@ -664,35 +664,35 @@ def _print_result(r: dict):
 
     print(f"{'─'*62}")
 
-    # Interpretação
+    # Interpretation
     prob = r["probability_pct"]
     if prob >= 75:
-        msg = "Sinal forte — histórico e contexto favorecem essa call."
+        msg = "Strong signal — history and context favor this call."
     elif prob >= 62:
-        msg = "Sinal moderado-positivo — call razoável, mas monitore de perto."
+        msg = "Moderate-positive signal — reasonable call, but monitor closely."
     elif prob >= 50:
-        msg = "Sinal neutro — incerteza considerável, dimensione posição com cuidado."
+        msg = "Neutral signal — considerable uncertainty, size position carefully."
     elif prob >= 38:
-        msg = "Sinal fraco — histórico ou contexto desfavorável. Alta cautela."
+        msg = "Weak signal — unfavorable history or context. High caution."
     else:
-        msg = "Sinal negativo — múltiplos fatores contra. Evite ou hedge."
+        msg = "Negative signal — multiple factors against. Avoid or hedge."
 
     print(f"  💬 {msg}")
     print(f"{'═'*62}\n")
 
 
 # ─────────────────────────────────────────────
-# CALCULAR RISK PARA TODAS AS CALLS RECENTES
+# CALCULATE RISK FOR ALL RECENT CALLS
 # ─────────────────────────────────────────────
 
 def calc_all_recent(days: int = 90, db_path: str = DB_PATH):
     """
-    Calcula e salva risk score para posições abertas recentes.
-    Persiste em tabela risk_assessments (position_id) para uso no dashboard.
+    Calculates and saves risk scores for recent open positions.
+    Persists to risk_assessments table (position_id) for dashboard use.
     """
     conn = get_connection(db_path)
 
-    # Criar/garantir tabela com position_id
+    # Create/ensure table with position_id
     conn.execute("""
         CREATE TABLE IF NOT EXISTS risk_assessments (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -732,7 +732,7 @@ def calc_all_recent(days: int = 90, db_path: str = DB_PATH):
     )
     positions = cursor.fetchall()
 
-    print(f"\n🔢 Calculando risk para {len(positions)} posições abertas (desde {since})...\n")
+    print(f"\n🔢 Calculating risk for {len(positions)} open positions (since {since})...\n")
 
     calculated = 0
     for pos in positions:
@@ -777,20 +777,20 @@ def calc_all_recent(days: int = 90, db_path: str = DB_PATH):
                   f"{pos['direction']:<5} {prob:>5.1f}%  {emoji} {result['rating']}")
 
         except Exception as e:
-            print(f"  ⚠️  Erro em posição #{pos['id']}: {e}")
+            print(f"  ⚠️  Error on position #{pos['id']}: {e}")
 
-    print(f"\n✅ {calculated} risk assessments calculados e salvos.\n")
+    print(f"\n✅ {calculated} risk assessments calculated and saved.\n")
     conn.close()
 
 
 # ─────────────────────────────────────────────
-# PERFIL DE RISCO DE UM ANALISTA
+# ANALYST RISK PROFILE
 # ─────────────────────────────────────────────
 
 def analyst_risk_profile(analyst_name: str, db_path: str = DB_PATH):
     """
-    Mostra o perfil de risco completo de um analista:
-    quais tipos de calls têm maior/menor probabilidade calibrada.
+    Shows the complete risk profile of an analyst:
+    which types of calls have higher/lower calibrated probability.
     """
     conn   = get_connection(db_path)
     cursor = conn.cursor()
@@ -812,29 +812,29 @@ def analyst_risk_profile(analyst_name: str, db_path: str = DB_PATH):
     conn.close()
 
     if not rows:
-        print(f"\n❌ Sem risk assessments para '{analyst_name}'.")
-        print("   Rode: python risk_engine.py --calc-all\n")
+        print(f"\n❌ No risk assessments for '{analyst_name}'.")
+        print("   Run: python risk_engine.py --calc-all\n")
         return
 
     df = pd.DataFrame([dict(r) for r in rows])
 
     print(f"\n{'═'*62}")
-    print(f"  🧠  Perfil de Risco — {analyst_name}")
+    print(f"  🧠  Risk Profile — {analyst_name}")
     print(f"{'═'*62}")
-    print(f"  Calls avaliadas: {len(df)}")
-    print(f"  Prob. média:     {df['probability'].mean()*100:.1f}%")
-    print(f"  Prob. mediana:   {df['probability'].median()*100:.1f}%")
-    print(f"\n  Por tipo de call:")
+    print(f"  Calls evaluated: {len(df)}")
+    print(f"  Avg probability: {df['probability'].mean()*100:.1f}%")
+    print(f"  Med probability: {df['probability'].median()*100:.1f}%")
+    print(f"\n  By call type:")
 
     for direction in ["buy", "sell", "hold"]:
         sub = df[df["direction"] == direction]
         if sub.empty:
             continue
-        print(f"    {direction.upper():<5}: {sub['probability'].mean()*100:.1f}% prob. média "
+        print(f"    {direction.upper():<5}: {sub['probability'].mean()*100:.1f}% avg prob. "
               f"({len(sub)} calls)")
 
     if df["sector"].notna().any():
-        print(f"\n  Por setor:")
+        print(f"\n  By sector:")
         sector_stats = (df.groupby("sector")["probability"]
                         .agg(["mean", "count"])
                         .sort_values("mean", ascending=False))
@@ -842,13 +842,13 @@ def analyst_risk_profile(analyst_name: str, db_path: str = DB_PATH):
             print(f"    {sector:<20} {row['mean']*100:.1f}%  ({int(row['count'])} calls)")
 
     # Top e bottom calls
-    print(f"\n  Calls com maior probabilidade:")
+    print(f"\n  Calls with highest probability:")
     top5 = df.nlargest(5, "probability")
     for _, r in top5.iterrows():
         print(f"    {r['ticker']:<8} {r['direction']:<5} {r['rec_date']}  "
               f"→ {r['probability']*100:.1f}%")
 
-    print(f"\n  Calls com menor probabilidade:")
+    print(f"\n  Calls with lowest probability:")
     bot5 = df.nsmallest(5, "probability")
     for _, r in bot5.iterrows():
         print(f"    {r['ticker']:<8} {r['direction']:<5} {r['rec_date']}  "
@@ -865,25 +865,25 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Analyst Tracker — Risk Engine"
     )
-    # Avaliar uma call específica
+    # Evaluate a specific call
     parser.add_argument("--ticker",    "-t", type=str,  default=None)
     parser.add_argument("--analyst",   "-a", type=str,  default=None)
     parser.add_argument("--direction", "-d", type=str,  default="buy",
                         choices=["buy", "sell", "hold"])
     parser.add_argument("--price",     "-p", type=float, default=None,
-                        help="Preço atual do ativo")
+                        help="Current asset price")
     parser.add_argument("--target",          type=float, default=None,
-                        help="Preço-alvo da recomendação")
+                        help="Recommendation price target")
     parser.add_argument("--date",            type=str,   default=None,
-                        help="Data da recomendação (YYYY-MM-DD)")
+                        help="Recommendation date (YYYY-MM-DD)")
 
-    # Operações em lote
+    # Batch operations
     parser.add_argument("--calc-all",  action="store_true",
-                        help="Calcular risk para todas as calls recentes")
+                        help="Calculate risk for all recent calls")
     parser.add_argument("--days",      type=int, default=90,
-                        help="Janela de dias para --calc-all (padrão: 90)")
+                        help="Day window for --calc-all (default: 90)")
     parser.add_argument("--profile",   type=str, default=None,
-                        help="Perfil de risco de um analista")
+                        help="Risk profile of an analyst")
 
     return parser.parse_args()
 
@@ -911,13 +911,13 @@ if __name__ == "__main__":
     else:
         print("\n🚀 Analyst Tracker — Risk Engine")
         print()
-        print("Exemplos:")
-        print("  # Avaliar uma call específica:")
+        print("Examples:")
+        print("  # Evaluate a specific call:")
         print('  python risk_engine.py --ticker NVDA --analyst "Dan Ives" --direction buy --price 182 --target 300')
         print()
-        print("  # Calcular risk para todas as calls recentes:")
+        print("  # Calculate risk for all recent calls:")
         print("  python risk_engine.py --calc-all --days 90")
         print()
-        print("  # Perfil de risco de um analista:")
+        print("  # Risk profile of an analyst:")
         print('  python risk_engine.py --profile "Dan Ives"')
         print()

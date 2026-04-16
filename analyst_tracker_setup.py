@@ -1,35 +1,35 @@
 """
 Analyst Tracker — Setup v2
 ===========================
-Schema redesenhado com positions como unidade central de avaliação.
+Redesigned schema with positions as the central evaluation unit.
 
-Modelo anterior (errado):
-  Cada linha em recommendations = call independente
-  → Dan Ives BUY NVDA Jan, Mar, Jun = 3 calls = inflação de hit rate
+Previous model (wrong):
+  Each row in recommendations = independent call
+  → Dan Ives BUY NVDA Jan, Mar, Jun = 3 calls = hit rate inflation
 
-Modelo novo (correto):
-  positions    = a tese (analista está LONG/SHORT/NEUTRO num ativo)
-  recommendations = revisões dentro de uma posição (target updates, reiterações)
-  performance  = calculada na POSIÇÃO inteira, do open ao close
+New model (correct):
+  positions    = the thesis (analyst is LONG/SHORT/NEUTRAL on an asset)
+  recommendations = revisions within a position (target updates, reiterations)
+  performance  = computed on the entire POSITION, from open to close
 
-O que abre uma nova posição:
-  - Mudança de rating (Neutral→Buy, Buy→Sell)
-  - Primeiro rating num ativo
-  - Retomada após encerrar cobertura
+What opens a new position:
+  - Rating change (Neutral→Buy, Buy→Sell)
+  - First rating on an asset
+  - Resumption after dropping coverage
 
-O que é apenas revisão (dentro da posição):
-  - Mesmo rating com novo target (ex: BUY NVDA $300 → BUY NVDA $450)
-  - Reiteração sem mudança de target
+What is just a revision (within the position):
+  - Same rating with new target (e.g.: BUY NVDA $300 → BUY NVDA $450)
+  - Reiteration without target change
 
-Conviction score (novo):
-  - Analista elevando target = conviction crescendo (+)
-  - Analista cortando target mas mantendo Buy = conviction caindo (-)
-  - Série de elevações seguida de downgrade = sinal de topo local
+Conviction score (new):
+  - Analyst raising target = conviction increasing (+)
+  - Analyst cutting target but maintaining Buy = conviction decreasing (-)
+  - Series of raises followed by downgrade = local top signal
 
-Uso:
+Usage:
     python analyst_tracker_setup.py
 
-Dependências:
+Dependencies:
     pip install yfinance pandas
 """
 
@@ -46,9 +46,9 @@ DB_PATH = "analyst_tracker.db"
 # ─────────────────────────────────────────────
 
 SCHEMA = """
--- ── ENTIDADES BASE ────────────────────────────────────────────────
+-- ── BASE ENTITIES ────────────────────────────────────────────────
 
--- Fontes: corretoras, canais, newsletters, etc.
+-- Sources: brokerages, channels, newsletters, etc.
 CREATE TABLE IF NOT EXISTS sources (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     name        TEXT NOT NULL,
@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS sources (
     created_at  TEXT DEFAULT (date('now'))
 );
 
--- Analistas individuais dentro de cada fonte
+-- Individual analysts within each source
 CREATE TABLE IF NOT EXISTS analysts (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     name       TEXT NOT NULL,
@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS analysts (
     created_at TEXT DEFAULT (date('now'))
 );
 
--- Ativos financeiros (ações, ETFs, índices)
+-- Financial assets (stocks, ETFs, indices)
 CREATE TABLE IF NOT EXISTS assets (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     ticker   TEXT NOT NULL UNIQUE,
@@ -87,7 +87,7 @@ CREATE TABLE IF NOT EXISTS assets (
     currency TEXT DEFAULT 'USD'
 );
 
--- Histórico de preços OHLCV
+-- OHLCV price history
 CREATE TABLE IF NOT EXISTS price_history (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     asset_id INTEGER NOT NULL REFERENCES assets(id),
@@ -100,84 +100,84 @@ CREATE TABLE IF NOT EXISTS price_history (
     UNIQUE(asset_id, date)
 );
 
--- ── MODELO DE POSIÇÃO ──────────────────────────────────────────────
+-- ── POSITION MODEL ──────────────────────────────────────────────
 
--- Posições: a tese do analista num ativo (unidade de avaliação)
--- Uma posição é aberta quando o analista inicia ou muda de rating.
--- É fechada quando muda de rating novamente ou encerra cobertura.
+-- Positions: the analyst's thesis on an asset (evaluation unit)
+-- A position is opened when the analyst initiates or changes rating.
+-- It is closed when rating changes again or coverage is dropped.
 CREATE TABLE IF NOT EXISTS positions (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
 
-    -- Quem e o quê
+    -- Who and what
     analyst_id      INTEGER NOT NULL REFERENCES analysts(id),
     asset_id        INTEGER NOT NULL REFERENCES assets(id),
 
-    -- Direção da posição (rating no momento da abertura)
+    -- Position direction (rating at the time of opening)
     direction       TEXT NOT NULL CHECK(direction IN ('buy','sell','hold','neutral')),
 
-    -- Data e preço de abertura da posição
+    -- Position open date and price
     open_date       TEXT NOT NULL,
     price_at_open   REAL,
 
-    -- Data e preço de fechamento (NULL = posição ainda aberta)
-    -- Fechamento ocorre quando: muda rating, encerra cobertura ou avaliamos
+    -- Close date and price (NULL = position still open)
+    -- Close occurs when: rating changes, coverage dropped, or we evaluate
     close_date      TEXT,
     price_at_close  REAL,
 
-    -- Razão do fechamento
+    -- Close reason
     close_reason    TEXT CHECK(close_reason IN (
-                        'rating_change',   -- analista mudou de Buy pra Hold, etc.
-                        'coverage_dropped',-- analista abandonou cobertura
-                        'horizon_reached', -- prazo do horizonte atingido
-                        'target_hit',      -- preço-alvo atingido
-                        'evaluated'        -- avaliação periódica (posição ainda ativa)
+                        'rating_change',   -- analyst changed from Buy to Hold, etc.
+                        'coverage_dropped',-- analyst dropped coverage
+                        'horizon_reached', -- horizon deadline reached
+                        'target_hit',      -- price target hit
+                        'evaluated'        -- periodic evaluation (position still active)
                     )),
 
-    -- Horizonte declarado (dias) — se analista especificou prazo
+    -- Declared horizon (days) — if analyst specified a timeframe
     horizon_days    INTEGER,
 
     -- Conviction tracking
-    -- Quantas vezes elevou / cortou target durante a posição
+    -- How many times target was raised / cut during the position
     target_upgrades   INTEGER DEFAULT 0,
     target_downgrades INTEGER DEFAULT 0,
 
-    -- Preço-alvo inicial e final (para calcular conviction journey)
+    -- Initial and final price target (to compute conviction journey)
     initial_target  REAL,
     final_target    REAL,
 
-    -- URL da primeira publicação que abriu a posição
+    -- URL of the first publication that opened the position
     source_url      TEXT,
     notes           TEXT,
     created_at      TEXT DEFAULT (datetime('now'))
 );
 
--- Revisões: cada update dentro de uma posição (target changes, reiterações)
--- NÃO são calls independentes — são capítulos da mesma tese
+-- Revisions: each update within a position (target changes, reiterations)
+-- These are NOT independent calls — they are chapters of the same thesis
 CREATE TABLE IF NOT EXISTS recommendations (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     position_id     INTEGER NOT NULL REFERENCES positions(id),
 
-    -- Tipo de revisão
+    -- Revision type
     rec_type        TEXT NOT NULL CHECK(rec_type IN (
-                        'open',        -- abre a posição (primeiro registro)
-                        'target_up',   -- eleva preço-alvo, mesmo rating → conviction +
-                        'target_down', -- corta preço-alvo, mesmo rating → conviction -
-                        'reiterate',   -- reitera sem mudança de target
-                        'close'        -- encerra posição (rating change ou dropped)
+                        'open',        -- opens the position (first record)
+                        'target_up',   -- raises price target, same rating → conviction +
+                        'target_down', -- cuts price target, same rating → conviction -
+                        'reiterate',   -- reiterates without target change
+                        'close'        -- closes position (rating change or dropped)
                     )),
 
-    -- Data e preço no momento da revisão
+    -- Date and price at the time of the revision
     rec_date        TEXT NOT NULL,
     price_at_rec    REAL,
 
-    -- Rating e target neste momento
+    -- Rating and target at this point
     direction       TEXT NOT NULL CHECK(direction IN ('buy','sell','hold','neutral')),
     price_target    REAL,
 
-    -- Delta do target vs revisão anterior (NULL na abertura)
+    -- Target delta vs previous revision (NULL on open)
     target_delta_pct REAL,
 
-    -- Link para a publicação original
+    -- Link to the original publication
     source_url      TEXT,
     notes           TEXT,
     created_at      TEXT DEFAULT (datetime('now'))
@@ -185,75 +185,75 @@ CREATE TABLE IF NOT EXISTS recommendations (
 
 -- ── PERFORMANCE ────────────────────────────────────────────────────
 
--- Performance calculada por POSIÇÃO (não por revisão individual)
--- O retorno é medido do open_date ao close_date da posição
+-- Performance computed per POSITION (not per individual revision)
+-- Return is measured from open_date to close_date of the position
 CREATE TABLE IF NOT EXISTS performance (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     position_id     INTEGER NOT NULL REFERENCES positions(id) UNIQUE,
 
-    -- Datas de avaliação
+    -- Evaluation dates
     eval_date       TEXT NOT NULL,
 
-    -- Preços
+    -- Prices
     price_open      REAL,
     price_eval      REAL,
 
-    -- Retorno bruto da posição
+    -- Gross position return
     return_pct      REAL,
 
-    -- Scores contínuos (0→1, >1 = superou o target)
-    direction_score REAL,   -- quão longe foi na direção certa
-    target_score    REAL,   -- quão perto chegou do preço-alvo final
+    -- Continuous scores (0→1, >1 = exceeded the target)
+    direction_score REAL,   -- how far it went in the right direction
+    target_score    REAL,   -- how close it got to the final price target
 
     -- Alpha vs benchmark
     alpha_vs_spy    REAL,
     alpha_vs_ibov   REAL,
 
-    -- Dias até atingir o target (NULL se não atingiu)
+    -- Days to reach target (NULL if not reached)
     days_to_target  INTEGER,
 
-    -- Conviction score da posição completa
-    -- Positivo = analista foi elevando conviction ao longo do tempo
-    -- Negativo = foi cortando
+    -- Conviction score of the complete position
+    -- Positive = analyst raised conviction over time
+    -- Negative = cut conviction
     conviction_score REAL,
 
-    -- Legado binário (derivado dos scores contínuos)
+    -- Legacy binary (derived from continuous scores)
     hit_direction   INTEGER,
     hit_target      INTEGER,
 
     updated_at      TEXT DEFAULT (datetime('now'))
 );
 
--- ── SCORES AGREGADOS ───────────────────────────────────────────────
+-- ── AGGREGATED SCORES ───────────────────────────────────────────────
 
--- Score agregado por analista (calculado periodicamente)
--- Baseado em posições fechadas ou avaliadas, não em revisões individuais
+-- Aggregated score per analyst (computed periodically)
+-- Based on closed or evaluated positions, not individual revisions
 CREATE TABLE IF NOT EXISTS analyst_scores (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     analyst_id          INTEGER NOT NULL REFERENCES analysts(id),
     calc_date           TEXT NOT NULL,
 
-    -- Métricas por posição (unidade correta de avaliação)
+    -- Metrics per position (correct evaluation unit)
     total_positions     INTEGER DEFAULT 0,
     open_positions      INTEGER DEFAULT 0,
     closed_positions    INTEGER DEFAULT 0,
 
     -- Performance
-    hit_rate            REAL,   -- % posições que acertaram direção
-    target_acc          REAL,   -- % posições que atingiram target
-    avg_alpha           REAL,   -- alpha médio vs benchmark
-    consistency         REAL,   -- estabilidade ao longo do tempo
+    hit_rate            REAL,   -- % positions that got direction right
+    target_acc          REAL,   -- % positions that hit target
+    avg_alpha           REAL,   -- average alpha vs benchmark
+    consistency         REAL,   -- stability over time
 
-    -- Scores contínuos
+    -- Continuous scores
     avg_direction_score REAL,
     avg_target_score    REAL,
 
     -- Conviction
-    avg_conviction      REAL,   -- analista tende a crescer ou cortar conviction?
-    avg_target_upgrades REAL,   -- média de elevações por posição
-    avg_target_downgrades REAL, -- média de cortes por posição
+    avg_conviction      REAL,   -- does analyst tend to raise or cut conviction?
+    avg_target_upgrades REAL,   -- average upgrades per position
+    avg_target_downgrades REAL, -- average downgrades per position
 
-    -- Legado
+    -- Legacy
     wins                INTEGER DEFAULT 0,
     losses              INTEGER DEFAULT 0,
 
@@ -261,7 +261,7 @@ CREATE TABLE IF NOT EXISTS analyst_scores (
     UNIQUE(analyst_id, calc_date)
 );
 
--- ── CLIPPING (coleta BR) ───────────────────────────────────────────
+-- ── CLIPPING (BR collection) ───────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS clipping_raw (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -280,7 +280,7 @@ CREATE TABLE IF NOT EXISTS clipping_extractions (
     clipping_id     INTEGER NOT NULL REFERENCES clipping_raw(id),
     raw_json        TEXT NOT NULL,
 
-    -- Campos extraídos pelo LLM
+    -- Fields extracted by the LLM
     analyst_name    TEXT,
     source_house    TEXT,
     ticker          TEXT,
@@ -290,7 +290,7 @@ CREATE TABLE IF NOT EXISTS clipping_extractions (
     rec_date        TEXT,
     horizon_days    INTEGER,
 
-    -- Tipo de revisão detectado pelo LLM
+    -- Revision type detected by the LLM
     rec_type        TEXT DEFAULT 'open'
                     CHECK(rec_type IN ('open','target_up','target_down','reiterate','close')),
 
@@ -299,7 +299,7 @@ CREATE TABLE IF NOT EXISTS clipping_extractions (
     status          TEXT DEFAULT 'pending'
                     CHECK(status IN ('pending','approved','rejected','imported')),
 
-    -- Referência à posição/revisão criada após aprovação
+    -- Reference to position/revision created after approval
     position_id     INTEGER REFERENCES positions(id),
     rec_id          INTEGER REFERENCES recommendations(id),
 
@@ -325,7 +325,7 @@ CREATE TABLE IF NOT EXISTS risk_assessments (
     UNIQUE(position_id)
 );
 
--- ── ÍNDICES ────────────────────────────────────────────────────────
+-- ── INDEXES ────────────────────────────────────────────────────────
 
 CREATE INDEX IF NOT EXISTS idx_pos_analyst  ON positions(analyst_id);
 CREATE INDEX IF NOT EXISTS idx_pos_asset    ON positions(asset_id);
@@ -469,7 +469,7 @@ SEED_ASSETS = [
 
 
 # ─────────────────────────────────────────────
-# HELPERS DE POSIÇÃO
+# POSITION HELPERS
 # ─────────────────────────────────────────────
 
 def open_position(
@@ -485,11 +485,11 @@ def open_position(
     notes: str = None
 ) -> int:
     """
-    Abre uma nova posição para um analista num ativo.
-    Também cria o primeiro registro em recommendations (rec_type='open').
-    Retorna o position_id.
+    Opens a new position for an analyst on an asset.
+    Also creates the first record in recommendations (rec_type='open').
+    Returns the position_id.
 
-    Exemplo:
+    Example:
         pos_id = open_position(conn, "Dan Ives", "NVDA", "buy",
                                "2023-01-15", 145.0, price_target=220.0,
                                horizon_days=365,
@@ -501,14 +501,14 @@ def open_position(
     cursor.execute("SELECT id FROM analysts WHERE name LIKE ?", (f"%{analyst_name}%",))
     analyst = cursor.fetchone()
     if not analyst:
-        raise ValueError(f"Analista não encontrado: '{analyst_name}'")
+        raise ValueError(f"Analyst not found: '{analyst_name}'")
 
     cursor.execute("SELECT id FROM assets WHERE ticker = ?", (ticker.upper(),))
     asset = cursor.fetchone()
     if not asset:
-        raise ValueError(f"Ativo não encontrado: '{ticker}'")
+        raise ValueError(f"Asset not found: '{ticker}'")
 
-    # Verificar se já tem posição aberta no mesmo ativo
+    # Check if there's already an open position on the same asset
     cursor.execute(
         """SELECT id, direction FROM positions
            WHERE analyst_id=? AND asset_id=? AND close_date IS NULL""",
@@ -516,11 +516,11 @@ def open_position(
     )
     existing = cursor.fetchone()
     if existing:
-        print(f"  ⚠️  {analyst_name} já tem posição aberta em {ticker} "
-              f"({existing['direction'].upper()}) — use update_position() para revisar")
+        print(f"  ⚠️  {analyst_name} already has open position on {ticker} "
+              f"({existing['direction'].upper()}) — use update_position() to revise")
         return existing["id"]
 
-    # Criar posição
+    # Create position
     cursor.execute(
         """INSERT INTO positions
            (analyst_id, asset_id, direction, open_date, price_at_open,
@@ -531,7 +531,7 @@ def open_position(
     )
     position_id = cursor.lastrowid
 
-    # Criar revisão de abertura
+    # Create opening revision
     cursor.execute(
         """INSERT INTO recommendations
            (position_id, rec_type, rec_date, price_at_rec, direction,
@@ -541,8 +541,8 @@ def open_position(
          price_target, source_url, notes)
     )
     conn.commit()
-    print(f"  ✅ Posição aberta: {analyst_name} → {ticker} {direction.upper()} @ "
-          f"${price_at_open} | target: {'$'+str(price_target) if price_target else 'sem target'}")
+    print(f"  ✅ Position opened: {analyst_name} → {ticker} {direction.upper()} @ "
+          f"${price_at_open} | target: {'$'+str(price_target) if price_target else 'no target'}")
     return position_id
 
 
@@ -556,12 +556,12 @@ def update_position(
     source_url: str = None
 ) -> str:
     """
-    Atualiza uma posição existente com nova revisão de target.
-    Detecta automaticamente se é target_up, target_down ou reiterate.
-    Retorna o rec_type detectado.
+    Updates an existing position with a new target revision.
+    Automatically detects whether it's target_up, target_down or reiterate.
+    Returns the detected rec_type.
 
-    Exemplo:
-        # Dan Ives eleva target de NVDA de $220 para $300
+    Example:
+        # Dan Ives raises NVDA target from $220 to $300
         update_position(conn, pos_id, "2023-05-25", 320.0,
                         new_target=300.0, notes="Blackwell demand beat estimates")
     """
@@ -578,11 +578,11 @@ def update_position(
     )
     pos = cursor.fetchone()
     if not pos:
-        raise ValueError(f"Posição #{position_id} não encontrada")
+        raise ValueError(f"Position #{position_id} not found")
 
     old_target = pos["final_target"]
 
-    # Detectar tipo de revisão
+    # Detect revision type
     if new_target is None or old_target is None:
         rec_type = "reiterate"
         target_delta_pct = None
@@ -596,7 +596,7 @@ def update_position(
         rec_type = "reiterate"
         target_delta_pct = 0.0
 
-    # Inserir revisão
+    # Insert revision
     cursor.execute(
         """INSERT INTO recommendations
            (position_id, rec_type, rec_date, price_at_rec, direction,
@@ -606,7 +606,7 @@ def update_position(
          new_target or old_target, target_delta_pct, source_url, notes)
     )
 
-    # Atualizar contadores e target final na posição
+    # Update counters and final target on the position
     if rec_type == "target_up":
         cursor.execute(
             "UPDATE positions SET final_target=?, target_upgrades=target_upgrades+1 WHERE id=?",
@@ -625,7 +625,7 @@ def update_position(
     conn.commit()
 
     delta_str = f" ({'+' if target_delta_pct and target_delta_pct>0 else ''}{target_delta_pct:.1f}%)" if target_delta_pct else ""
-    print(f"  {icon} Posição #{position_id} revisada ({rec_type}): "
+    print(f"  {icon} Position #{position_id} revised ({rec_type}): "
           f"{pos['analyst_name']} → {pos['ticker']} "
           f"target: ${old_target} → ${new_target or old_target}{delta_str}")
     return rec_type
@@ -643,12 +643,12 @@ def close_position(
     notes: str = None
 ) -> int | None:
     """
-    Fecha uma posição existente.
-    Se new_direction é fornecida (ex: Buy → Hold), abre nova posição automaticamente.
-    Retorna o novo position_id se abriu nova posição, None caso contrário.
+    Closes an existing position.
+    If new_direction is provided (e.g.: Buy → Hold), opens a new position automatically.
+    Returns the new position_id if a new position was opened, None otherwise.
 
-    Exemplo:
-        # Dan Ives faz downgrade de NVDA de Buy para Hold
+    Example:
+        # Dan Ives downgrades NVDA from Buy to Hold
         new_pos = close_position(conn, pos_id, "2024-08-15", 109.0,
                                  new_direction="hold",
                                  notes="Valuation stretched post-rally",
@@ -667,9 +667,9 @@ def close_position(
     )
     pos = cursor.fetchone()
     if not pos:
-        raise ValueError(f"Posição #{position_id} não encontrada")
+        raise ValueError(f"Position #{position_id} not found")
 
-    # Registrar revisão de fechamento
+    # Record closing revision
     cursor.execute(
         """INSERT INTO recommendations
            (position_id, rec_type, rec_date, price_at_rec, direction,
@@ -679,7 +679,7 @@ def close_position(
          new_direction or pos["direction"], new_target, source_url, notes)
     )
 
-    # Fechar posição
+    # Close position
     cursor.execute(
         """UPDATE positions SET
            close_date=?, price_at_close=?, close_reason=?
@@ -687,11 +687,11 @@ def close_position(
         (close_date, price_at_close, close_reason, position_id)
     )
     conn.commit()
-    print(f"  🔴 Posição #{position_id} fechada: {pos['analyst_name']} → "
+    print(f"  🔴 Position #{position_id} closed: {pos['analyst_name']} → "
           f"{pos['ticker']} ({pos['direction'].upper()} → "
-          f"{(new_direction or 'encerrado').upper()}) @ ${price_at_close}")
+          f"{(new_direction or 'dropped').upper()}) @ ${price_at_close}")
 
-    # Se mudou de rating, abrir nova posição
+    # If rating changed, open new position
     new_pos_id = None
     if new_direction and new_direction.lower() != pos["direction"]:
         new_pos_id = open_position(
@@ -710,7 +710,7 @@ def close_position(
 
 
 def get_open_positions(conn: sqlite3.Connection, analyst_name: str = None) -> list:
-    """Lista posições abertas (sem close_date)."""
+    """Lists open positions (no close_date)."""
     cursor = conn.cursor()
     if analyst_name:
         cursor.execute(
@@ -739,7 +739,7 @@ def get_open_positions(conn: sqlite3.Connection, analyst_name: str = None) -> li
 
 
 def get_position_history(conn: sqlite3.Connection, position_id: int) -> dict:
-    """Retorna posição completa com todas as revisões."""
+    """Returns complete position with all revisions."""
     cursor = conn.cursor()
 
     cursor.execute(
@@ -762,7 +762,7 @@ def get_position_history(conn: sqlite3.Connection, position_id: int) -> dict:
 
 
 # ─────────────────────────────────────────────
-# SETUP PRINCIPAL
+# MAIN SETUP
 # ─────────────────────────────────────────────
 
 def create_database(db_path: str = DB_PATH) -> sqlite3.Connection:
@@ -772,7 +772,7 @@ def create_database(db_path: str = DB_PATH) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA)
     conn.commit()
-    print(f"✅ Schema v2 criado em: {db_path}")
+    print(f"✅ Schema v2 created in: {db_path}")
     return conn
 
 
@@ -788,7 +788,7 @@ def insert_seed_sources(conn: sqlite3.Connection):
             )
             inserted += 1
     conn.commit()
-    print(f"✅ {inserted} fontes inseridas")
+    print(f"✅ {inserted} sources inserted")
 
 
 def insert_seed_analysts(conn: sqlite3.Connection):
@@ -798,7 +798,7 @@ def insert_seed_analysts(conn: sqlite3.Connection):
         cursor.execute("SELECT id FROM sources WHERE name=?", (source_name,))
         source = cursor.fetchone()
         if not source:
-            print(f"  ⚠️  Fonte não encontrada: {source_name}")
+            print(f"  ⚠️  Source not found: {source_name}")
             continue
         cursor.execute(
             "SELECT id FROM analysts WHERE name=? AND source_id=?",
@@ -811,7 +811,7 @@ def insert_seed_analysts(conn: sqlite3.Connection):
             )
             inserted += 1
     conn.commit()
-    print(f"✅ {inserted} analistas inseridos")
+    print(f"✅ {inserted} analysts inserted")
 
 
 def insert_seed_assets(conn: sqlite3.Connection):
@@ -826,12 +826,12 @@ def insert_seed_assets(conn: sqlite3.Connection):
             )
             inserted += 1
     conn.commit()
-    print(f"✅ {inserted} ativos inseridos")
+    print(f"✅ {inserted} assets inserted")
 
 
 def show_summary(conn: sqlite3.Connection):
     cursor = conn.cursor()
-    print("\n─── Resumo do banco ────────────────────────────")
+    print("\n─── Database Summary ───────────────────────────")
     tables = [
         "sources", "analysts", "assets",
         "positions", "recommendations",
@@ -841,7 +841,7 @@ def show_summary(conn: sqlite3.Connection):
     for table in tables:
         try:
             cursor.execute(f"SELECT COUNT(*) as n FROM {table}")
-            print(f"  {table:<26} {cursor.fetchone()['n']:>6} registros")
+            print(f"  {table:<26} {cursor.fetchone()['n']:>6} records")
         except Exception:
             pass
     print("────────────────────────────────────────────────")
@@ -855,46 +855,46 @@ def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
 
 
 # ─────────────────────────────────────────────
-# EXECUÇÃO PRINCIPAL
+# MAIN EXECUTION
 # ─────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print("\n🚀 Analyst Tracker v2 — Inicializando banco\n")
+    print("\n🚀 Analyst Tracker v2 — Initializing database\n")
 
     conn = create_database(DB_PATH)
     insert_seed_sources(conn)
     insert_seed_analysts(conn)
     insert_seed_assets(conn)
 
-    # ── Exemplo de uso com posições ──────────────────────────
-    print("\n── Exemplo: ciclo completo de posição ──────────────")
+    # ── Example usage with positions ──────────────────────────
+    print("\n── Example: complete position cycle ──────────────")
 
-    # Dan Ives abre BUY em NVDA
+    # Dan Ives opens BUY on NVDA
     pos1 = open_position(
         conn, "Dan Ives", "NVDA", "buy", "2023-01-15", 145.0,
         price_target=220.0, horizon_days=365,
         notes="AI supercycle — NVDA beneficiary #1"
     )
 
-    # Eleva target após resultados fortes
+    # Raises target after strong results
     update_position(
         conn, pos1, "2023-05-25", 320.0, new_target=350.0,
         notes="Data center demand accelerating post-ChatGPT"
     )
 
-    # Eleva target novamente — conviction crescendo
+    # Raises target again — conviction increasing
     update_position(
         conn, pos1, "2023-08-23", 435.0, new_target=550.0,
         notes="Blackwell pipeline stronger than expected"
     )
 
-    # Reitera em Jan/2024
+    # Reiterates in Jan/2024
     update_position(
         conn, pos1, "2024-01-10", 480.0,
         notes="Reiterate — AI capex cycle intact"
     )
 
-    # Faz downgrade em Ago/2024 (valuation concern)
+    # Downgrades in Aug/2024 (valuation concern)
     new_pos = close_position(
         conn, pos1, "2024-08-15", 109.0,
         new_direction="hold",
@@ -902,16 +902,16 @@ if __name__ == "__main__":
         close_reason="rating_change"
     )
 
-    # Mostrar histórico da posição
-    print("\n── Histórico da posição ────────────────────────────")
+    # Show position history
+    print("\n── Position History ───────────────────────────────")
     hist = get_position_history(conn, pos1)
     p    = hist["position"]
-    print(f"  Posição #{p['id']}: {p['analyst_name']} → {p['ticker']} {p['direction'].upper()}")
-    print(f"  Aberta: {p['open_date']} @ ${p['price_at_open']}")
-    print(f"  Fechada: {p['close_date']} @ ${p['price_at_close']}")
+    print(f"  Position #{p['id']}: {p['analyst_name']} → {p['ticker']} {p['direction'].upper()}")
+    print(f"  Opened: {p['open_date']} @ ${p['price_at_open']}")
+    print(f"  Closed: {p['close_date']} @ ${p['price_at_close']}")
     print(f"  Target upgrades: {p['target_upgrades']} | downgrades: {p['target_downgrades']}")
-    print(f"  Target inicial: ${p['initial_target']} → final: ${p['final_target']}")
-    print(f"\n  Revisões ({len(hist['revisions'])}):")
+    print(f"  Initial target: ${p['initial_target']} → final: ${p['final_target']}")
+    print(f"\n  Revisions ({len(hist['revisions'])}):")
     for r in hist["revisions"]:
         icon = {"open":"🟢","target_up":"📈","target_down":"📉","reiterate":"↗️","close":"🔴"}.get(r["rec_type"],"·")
         tgt  = f" → ${r['price_target']}" if r["price_target"] else ""
@@ -920,5 +920,5 @@ if __name__ == "__main__":
 
     show_summary(conn)
     conn.close()
-    print(f"\n✅ Pronto! Banco v2: {os.path.abspath(DB_PATH)}")
-    print("   Próximo passo: python price_fetcher.py")
+    print(f"\n✅ Done! Database v2: {os.path.abspath(DB_PATH)}")
+    print("   Next step: python price_fetcher.py")

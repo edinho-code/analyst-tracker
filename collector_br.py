@@ -1,25 +1,25 @@
 """
 Analyst Tracker — Collector BR (Clipping + LLM Extractor)
 ===========================================================
-Coleta recomendações de analistas brasileiros via clipping de imprensa financeira.
+Collects Brazilian analyst recommendations via financial press clipping.
 
-Fluxo:
-  1. Scraper busca artigos por ticker em fontes BR (InfoMoney, Seu Dinheiro, etc.)
-  2. Filtra artigos com linguagem de recomendação
-  3. LLM (Claude) extrai estrutura: ticker, direção, preço-alvo, analista, data
-  4. Salva no banco com confidence score — abaixo de 0.75 vai para revisão manual
+Flow:
+  1. Scraper searches articles by ticker from BR sources (InfoMoney, Seu Dinheiro, etc.)
+  2. Filters articles with recommendation language
+  3. LLM (Claude) extracts structure: ticker, direction, price target, analyst, date
+  4. Saves to database with confidence score — below 0.75 goes to manual review
 
-Uso:
+Usage:
     python collector_br.py --ticker VALE3
     python collector_br.py --ticker PETR4 --since 2022-01-01
-    python collector_br.py --all                        # todos os tickers BR do banco
-    python collector_br.py --review                     # revisar extrações pendentes
-    python collector_br.py --approve <clipping_id>      # aprovar manualmente
-    python collector_br.py --reject  <clipping_id>      # rejeitar manualmente
+    python collector_br.py --all                        # all BR tickers in database
+    python collector_br.py --review                     # review pending extractions
+    python collector_br.py --approve <clipping_id>      # manually approve
+    python collector_br.py --reject  <clipping_id>      # manually reject
 
-Dependências:
+Dependencies:
     pip install requests beautifulsoup4 anthropic
-    Variável de ambiente: ANTHROPIC_API_KEY
+    Environment variable: ANTHROPIC_API_KEY
 """
 
 from __future__ import annotations
@@ -38,40 +38,40 @@ try:
     import requests
     from bs4 import BeautifulSoup
 except ImportError:
-    print("❌ Rode: pip install requests beautifulsoup4")
+    print("❌ Run: pip install requests beautifulsoup4")
     sys.exit(1)
 
 try:
     import anthropic
 except ImportError:
-    print("❌ Rode: pip install anthropic")
+    print("❌ Run: pip install anthropic")
     sys.exit(1)
 
 DB_PATH            = "analyst_tracker.db"
-CONFIDENCE_AUTO    = 0.75   # acima disso → entra automaticamente
-CONFIDENCE_REVIEW  = 0.50   # entre 0.50–0.75 → revisão manual
-SLEEP_BETWEEN      = 1.5    # segundos entre requests (respeitar rate limit)
-MAX_ARTICLES       = 10     # artigos por ticker por fonte
+CONFIDENCE_AUTO    = 0.75   # above this → auto-approved
+CONFIDENCE_REVIEW  = 0.50   # between 0.50–0.75 → manual review
+SLEEP_BETWEEN      = 1.5    # seconds between requests (respect rate limit)
+MAX_ARTICLES       = 10     # articles per ticker per source
 
-# Tickers BR que coletamos
+# BR tickers we collect
 BR_TICKERS = [
-    # Petróleo / Energia
+    # Oil / Energy
     "PETR4", "PRIO3", "CPLE3", "VBBR3",
-    # Mineração / Siderurgia
+    # Mining / Steel
     "VALE3", "GGBR4", "CSNA3",
-    # Bancos / Financeiro
+    # Banks / Financial
     "ITUB4", "BBDC4", "BBAS3", "B3SA3",
-    # Consumo / Varejo
+    # Consumer / Retail
     "WEGE3", "ABEV3", "LREN3", "RENT3",
-    # Saúde
+    # Healthcare
     "RDOR3", "HAPV3",
-    # Proteína / Agro
+    # Protein / Agro
     "BEEF3", "SLCE3",
-    # Outros
+    # Other
     "SUZB3", "MGLU3", "RAIL3",
 ]
 
-# Palavras-chave que indicam presença de recomendação no artigo
+# Keywords indicating recommendation presence in article
 REC_KEYWORDS = [
     "preço-alvo", "preco alvo", "preço alvo",
     "recomenda", "recomendação", "recomendacao",
@@ -85,7 +85,7 @@ REC_KEYWORDS = [
 
 
 # ─────────────────────────────────────────────
-# CONEXÃO E MIGRAÇÃO
+# CONNECTION AND MIGRATION
 # ─────────────────────────────────────────────
 
 def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
@@ -98,8 +98,8 @@ def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
 
 def migrate_clipping_table(conn: sqlite3.Connection):
     """
-    Cria tabela de clipping se não existir (schema v2 com position_id e rec_type).
-    Idempotente — seguro rodar várias vezes.
+    Creates clipping table if it doesn't exist (schema v2 with position_id and rec_type).
+    Idempotent — safe to run multiple times.
     """
     conn.execute("""
         CREATE TABLE IF NOT EXISTS clipping_raw (
@@ -143,7 +143,7 @@ def migrate_clipping_table(conn: sqlite3.Connection):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_clip_status ON clipping_extractions(status)")
     conn.commit()
 
-    # Adicionar colunas novas se tabela existia sem elas (migração)
+    # Add new columns if table existed without them (migration)
     cursor = conn.cursor()
     cursor.execute("PRAGMA table_info(clipping_extractions)")
     cols = {row[1] for row in cursor.fetchall()}
@@ -155,7 +155,7 @@ def migrate_clipping_table(conn: sqlite3.Connection):
 
 
 # ─────────────────────────────────────────────
-# SCRAPERS POR FONTE
+# SCRAPERS BY SOURCE
 # ─────────────────────────────────────────────
 
 HEADERS = {
@@ -174,7 +174,7 @@ def url_hash(url: str) -> str:
 
 def scrape_infomoney(ticker: str, since: str = "2022-01-01") -> list[dict]:
     """
-    InfoMoney — busca artigos por ticker via search.
+    InfoMoney — searches articles by ticker via search.
     URL: https://www.infomoney.com.br/busca/?q=VALE3+recomendação
     """
     results = []
@@ -186,7 +186,7 @@ def scrape_infomoney(ticker: str, since: str = "2022-01-01") -> list[dict]:
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # InfoMoney search results — artigos em <article> ou <div class="search-item">
+        # InfoMoney search results — articles in <article> or <div class="search-item">
         articles = soup.find_all("article", limit=MAX_ARTICLES)
         if not articles:
             articles = soup.find_all("div", class_=re.compile(r"search|result|item"), limit=MAX_ARTICLES)
@@ -217,7 +217,7 @@ def scrape_infomoney(ticker: str, since: str = "2022-01-01") -> list[dict]:
 
 def scrape_seudinheiro(ticker: str, since: str = "2022-01-01") -> list[dict]:
     """
-    Seu Dinheiro — busca por ticker.
+    Seu Dinheiro — searches by ticker.
     """
     results = []
     query   = f"{ticker} recomendação preço alvo"
@@ -236,7 +236,7 @@ def scrape_seudinheiro(ticker: str, since: str = "2022-01-01") -> list[dict]:
             title = art.find("h2") or art.find("h3")
             title = title.get_text(strip=True) if title else a_tag.get_text(strip=True)
 
-            # Tentar pegar data
+            # Try to get date
             time_tag = art.find("time")
             art_date = None
             if time_tag and time_tag.get("datetime"):
@@ -260,7 +260,7 @@ def scrape_seudinheiro(ticker: str, since: str = "2022-01-01") -> list[dict]:
 
 def scrape_moneytimes(ticker: str, since: str = "2022-01-01") -> list[dict]:
     """
-    Money Times — cobre upgrades/downgrades rapidamente.
+    Money Times — covers upgrades/downgrades quickly.
     """
     results = []
     query   = f"{ticker} recomendação"
@@ -302,7 +302,7 @@ def scrape_moneytimes(ticker: str, since: str = "2022-01-01") -> list[dict]:
 
 def scrape_einvestidor(ticker: str, since: str = "2022-01-01") -> list[dict]:
     """
-    E-Investidor (Estadão) — boa cobertura de blue chips.
+    E-Investidor (Estadão) — good coverage of blue chips.
     """
     results = []
     query   = f"{ticker} preço-alvo analista"
@@ -344,7 +344,7 @@ def scrape_einvestidor(ticker: str, since: str = "2022-01-01") -> list[dict]:
 
 def scrape_guiadoinvestidor(ticker: str, since: str = "2022-01-01") -> list[dict]:
     """
-    Guia do Investidor — agrega preços-alvo, ótima fonte.
+    Guia do Investidor — aggregates price targets, great source.
     """
     results = []
     query   = f"{ticker} preço alvo recomendação"
@@ -394,25 +394,25 @@ ALL_SCRAPERS = [
 
 
 # ─────────────────────────────────────────────
-# BUSCAR CORPO DO ARTIGO
+# FETCH ARTICLE BODY
 # ─────────────────────────────────────────────
 
 def fetch_article_body(url: str) -> str | None:
     """
-    Baixa e extrai o texto principal de um artigo.
-    Retorna None se falhar ou se o artigo não tiver conteúdo relevante.
+    Downloads and extracts the main text of an article.
+    Returns None if it fails or if the article has no relevant content.
     """
     try:
         resp = requests.get(url, headers=HEADERS, timeout=15)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # Remover scripts, styles, navs
+        # Remove scripts, styles, navs
         for tag in soup(["script", "style", "nav", "header", "footer",
                          "aside", "form", "iframe"]):
             tag.decompose()
 
-        # Tentar extrair o corpo principal do artigo
+        # Try to extract the main article body
         body = (
             soup.find("article") or
             soup.find("div", class_=re.compile(r"content|article|post|body|texto")) or
@@ -421,10 +421,10 @@ def fetch_article_body(url: str) -> str | None:
 
         text = body.get_text(separator=" ", strip=True) if body else soup.get_text(separator=" ", strip=True)
 
-        # Limpar espaços extras
+        # Clean extra whitespace
         text = re.sub(r"\s+", " ", text).strip()
 
-        # Só retornar se tiver conteúdo mínimo
+        # Only return if it has minimum content
         return text[:6000] if len(text) > 200 else None
 
     except Exception:
@@ -432,52 +432,52 @@ def fetch_article_body(url: str) -> str | None:
 
 
 def has_recommendation_keywords(text: str) -> bool:
-    """Verifica se o texto contém linguagem de recomendação."""
+    """Checks if text contains recommendation language."""
     text_lower = text.lower()
     return any(kw.lower() in text_lower for kw in REC_KEYWORDS)
 
 
 # ─────────────────────────────────────────────
-# EXTRAÇÃO LLM (CLAUDE)
+# LLM EXTRACTION (CLAUDE)
 # ─────────────────────────────────────────────
 
-EXTRACTION_PROMPT = """Você é um extrator especializado em recomendações de analistas financeiros.
+EXTRACTION_PROMPT = """You are a specialized extractor of financial analyst recommendations.
 
-Analise o texto abaixo e extraia TODAS as recomendações de analistas mencionadas.
+Analyze the text below and extract ALL analyst recommendations mentioned.
 
-Para cada recomendação encontrada, retorne um objeto JSON com:
-- analyst_name: nome da corretora/banco/analista (ex: "Itaú BBA", "BTG Pactual", "XP Investimentos")
-- ticker: código da ação (ex: "VALE3", "PETR4")
-- direction: "buy", "sell" ou "hold" (compra=buy, venda=sell, neutro/manter=hold)
-- price_target: preço-alvo numérico (null se não mencionado)
-- currency: "BRL" ou "USD"
-- rec_date: data da recomendação no formato YYYY-MM-DD (use a data do artigo se não houver data específica)
-- horizon_days: prazo em dias (null se não mencionado; 365 se disser "12 meses")
-- notes: trecho relevante do texto que suporta a extração (máx 200 chars)
-- confidence: número entre 0 e 1 indicando sua certeza na extração
-  - 1.0: data exata, analista nomeado, preço-alvo explícito
-  - 0.8: analista nomeado, direção clara, sem preço-alvo
-  - 0.6: analista implícito ou direção ambígua
-  - abaixo de 0.5: muito incerto — preferível não incluir
+For each recommendation found, return a JSON object with:
+- analyst_name: name of the brokerage/bank/analyst (e.g.: "Itaú BBA", "BTG Pactual", "XP Investimentos")
+- ticker: stock code (e.g.: "VALE3", "PETR4")
+- direction: "buy", "sell" or "hold" (compra=buy, venda=sell, neutro/manter=hold)
+- price_target: numeric price target (null if not mentioned)
+- currency: "BRL" or "USD"
+- rec_date: recommendation date in YYYY-MM-DD format (use article date if no specific date)
+- horizon_days: timeframe in days (null if not mentioned; 365 if it says "12 meses")
+- notes: relevant excerpt from text supporting the extraction (max 200 chars)
+- confidence: number between 0 and 1 indicating your certainty in the extraction
+  - 1.0: exact date, named analyst, explicit price target
+  - 0.8: named analyst, clear direction, no price target
+  - 0.6: implicit analyst or ambiguous direction
+  - below 0.5: very uncertain — preferable not to include
 
-Retorne APENAS um JSON válido no formato:
+Return ONLY valid JSON in the format:
 {
   "recommendations": [
-    { ...campos acima... },
+    { ...fields above... },
     ...
   ],
-  "article_date": "YYYY-MM-DD ou null"
+  "article_date": "YYYY-MM-DD or null"
 }
 
-Se não houver nenhuma recomendação clara, retorne:
+If there are no clear recommendations, return:
 { "recommendations": [], "article_date": null }
 
-NÃO inclua explicações, markdown ou texto fora do JSON.
+Do NOT include explanations, markdown or text outside the JSON.
 
-TICKER BUSCADO: {ticker}
-DATA DO ARTIGO: {article_date}
+TICKER SEARCHED: {ticker}
+ARTICLE DATE: {article_date}
 
-TEXTO DO ARTIGO:
+ARTICLE TEXT:
 {article_text}
 """
 
@@ -489,12 +489,12 @@ def extract_with_llm(
     client: anthropic.Anthropic
 ) -> dict | None:
     """
-    Usa Claude para extrair recomendações estruturadas de um texto de artigo.
-    Retorna o JSON parseado ou None se falhar.
+    Uses Claude to extract structured recommendations from article text.
+    Returns parsed JSON or None on failure.
     """
     prompt = EXTRACTION_PROMPT.format(
         ticker=ticker,
-        article_date=article_date or "desconhecida",
+        article_date=article_date or "unknown",
         article_text=article_text[:5000]
     )
 
@@ -507,7 +507,7 @@ def extract_with_llm(
 
         raw = response.content[0].text.strip()
 
-        # Limpar possível markdown
+        # Clean possible markdown
         raw = re.sub(r"^```json\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
 
@@ -522,16 +522,16 @@ def extract_with_llm(
 
 
 # ─────────────────────────────────────────────
-# SALVAR NO BANCO
+# SAVE TO DATABASE
 # ─────────────────────────────────────────────
 
 def save_clipping(conn: sqlite3.Connection, ticker: str, article: dict, body: str) -> int | None:
-    """Salva artigo bruto. Retorna id ou None se duplicado."""
+    """Saves raw article. Returns id or None if duplicate."""
     h = url_hash(article["url"])
     cursor = conn.cursor()
     cursor.execute("SELECT id FROM clipping_raw WHERE url_hash = ?", (h,))
     if cursor.fetchone():
-        return None  # já existe
+        return None  # already exists
 
     cursor.execute(
         """INSERT INTO clipping_raw (ticker, source_name, article_url, article_date, title, body_text, url_hash)
@@ -544,7 +544,7 @@ def save_clipping(conn: sqlite3.Connection, ticker: str, article: dict, body: st
 
 
 def save_extraction(conn: sqlite3.Connection, clipping_id: int, rec: dict, raw_json: str):
-    """Salva uma extração LLM. Status inicial depende do confidence."""
+    """Saves an LLM extraction. Initial status depends on confidence."""
     confidence = rec.get("confidence", 0)
     status     = "approved" if confidence >= CONFIDENCE_AUTO else "pending"
 
@@ -566,14 +566,14 @@ def save_extraction(conn: sqlite3.Connection, clipping_id: int, rec: dict, raw_j
 
 
 def _get_or_create_analyst_id(conn: sqlite3.Connection, analyst_name: str, source_house: str) -> int:
-    """Busca ou cria analista + fonte. Retorna analyst_id."""
+    """Finds or creates analyst + source. Returns analyst_id."""
     cursor = conn.cursor()
     cursor.execute("SELECT id FROM analysts WHERE name LIKE ?", (f"%{analyst_name}%",))
     analyst = cursor.fetchone()
     if analyst:
         return analyst["id"]
 
-    # Criar ou buscar fonte
+    # Create or find source
     cursor.execute("SELECT id FROM sources WHERE name LIKE ?", (f"%{source_house}%",))
     source = cursor.fetchone()
     if not source:
@@ -613,7 +613,7 @@ def _open_position_br(
     price_at_rec: float | None, price_target: float | None,
     source_url: str | None, notes: str | None
 ) -> tuple[int, int]:
-    """Abre nova posição e revisão 'open'. Retorna (position_id, rec_id)."""
+    """Opens new position and 'open' revision. Returns (position_id, rec_id)."""
     cursor = conn.cursor()
     cursor.execute(
         """INSERT INTO positions
@@ -644,10 +644,10 @@ def _update_position_br(
     rec_date: str, price_at_rec: float | None,
     price_target: float | None, source_url: str | None, notes: str | None
 ) -> tuple[str, int]:
-    """Adiciona revisão a posição existente. Retorna (rec_type, rec_id)."""
+    """Adds revision to existing position. Returns (rec_type, rec_id)."""
     cursor = conn.cursor()
 
-    # Detectar rec_type a partir do hint do LLM e da mudança de target
+    # Detect rec_type from LLM hint and target change
     if rec_type_hint in ("target_up", "target_down", "reiterate"):
         rec_type = rec_type_hint
     elif price_target and old_target:
@@ -691,9 +691,9 @@ def _update_position_br(
 
 def import_approved_to_recommendations(conn: sqlite3.Connection) -> int:
     """
-    Importa extrações aprovadas para positions + recommendations (modelo v2).
-    Verifica se já existe posição aberta para analista+ativo e cria revisão se sim.
-    Retorna número de registros importados.
+    Imports approved extractions to positions + recommendations (v2 model).
+    Checks if an open position already exists for analyst+asset and creates revision if so.
+    Returns number of imported records.
     """
     cursor   = conn.cursor()
     imported = 0
@@ -715,11 +715,11 @@ def import_approved_to_recommendations(conn: sqlite3.Connection) -> int:
         cursor.execute("SELECT id FROM assets WHERE ticker = ?", (row["ticker"],))
         asset = cursor.fetchone()
         if not asset:
-            # Tentar com sufixo .SA
+            # Try with .SA suffix
             cursor.execute("SELECT id FROM assets WHERE ticker = ?", (row["ticker"] + ".SA",))
             asset = cursor.fetchone()
         if not asset:
-            print(f"  ⚠️  Ativo não encontrado: {row['ticker']} — pulando")
+            print(f"  ⚠️  Asset not found: {row['ticker']} — skipping")
             continue
 
         asset_id     = asset["id"]
@@ -731,7 +731,7 @@ def import_approved_to_recommendations(conn: sqlite3.Connection) -> int:
         rec_date     = row["rec_date"]
         rec_type_hint = row.get("rec_type") or "open"
 
-        # Verificar se já existe posição aberta
+        # Check if open position already exists
         cursor.execute(
             """SELECT id, direction, final_target FROM positions
                WHERE analyst_id=? AND asset_id=? AND close_date IS NULL""",
@@ -743,13 +743,13 @@ def import_approved_to_recommendations(conn: sqlite3.Connection) -> int:
         rec_id      = None
 
         if not open_pos:
-            # Abrir nova posição
+            # Open new position
             position_id, rec_id = _open_position_br(
                 conn, analyst_id, asset_id, direction, rec_date,
                 price_at_rec, price_target, source_url, notes
             )
         elif open_pos["direction"] == direction:
-            # Mesma direção → revisão
+            # Same direction → revision
             _, rec_id = _update_position_br(
                 conn, open_pos["id"], open_pos["final_target"],
                 rec_type_hint, direction, rec_date, price_at_rec,
@@ -757,7 +757,7 @@ def import_approved_to_recommendations(conn: sqlite3.Connection) -> int:
             )
             position_id = open_pos["id"]
         else:
-            # Direção diferente → fechar posição atual
+            # Different direction → close current position
             cursor.execute(
                 """INSERT INTO recommendations
                    (position_id, rec_type, rec_date, price_at_rec, direction,
@@ -772,13 +772,13 @@ def import_approved_to_recommendations(conn: sqlite3.Connection) -> int:
                 (rec_date, price_at_rec, open_pos["id"])
             )
             conn.commit()
-            # Abrir nova posição
+            # Open new position
             position_id, rec_id = _open_position_br(
                 conn, analyst_id, asset_id, direction, rec_date,
                 price_at_rec, price_target, source_url, notes
             )
 
-        # Marcar extração como importada
+        # Mark extraction as imported
         cursor.execute(
             """UPDATE clipping_extractions
                SET status='imported', position_id=?, rec_id=?, reviewed_at=datetime('now')
@@ -792,14 +792,14 @@ def import_approved_to_recommendations(conn: sqlite3.Connection) -> int:
 
 
 # ─────────────────────────────────────────────
-# PIPELINE PRINCIPAL
+# MAIN PIPELINE
 # ─────────────────────────────────────────────
 
 def run_collector(ticker: str, since: str = "2022-01-01"):
-    """Pipeline completo para um ticker."""
+    """Complete pipeline for a single ticker."""
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        print("❌ ANTHROPIC_API_KEY não definida.")
+        print("❌ ANTHROPIC_API_KEY not set.")
         print("   export ANTHROPIC_API_KEY='sk-ant-...'")
         sys.exit(1)
 
@@ -808,7 +808,7 @@ def run_collector(ticker: str, since: str = "2022-01-01"):
     migrate_clipping_table(conn)
 
     ticker = ticker.upper()
-    print(f"\n📰 Coletando clipping para {ticker} (desde {since})\n")
+    print(f"\n📰 Collecting clippings for {ticker} (since {since})\n")
 
     articles_found    = 0
     articles_relevant = 0
@@ -820,29 +820,29 @@ def run_collector(ticker: str, since: str = "2022-01-01"):
         print(f"  🔍 {source_name}...", end=" ", flush=True)
 
         articles = scraper(ticker, since=since)
-        print(f"{len(articles)} artigos encontrados")
+        print(f"{len(articles)} articles found")
         articles_found += len(articles)
 
         for article in articles:
             time.sleep(SLEEP_BETWEEN)
 
-            # Baixar corpo do artigo
+            # Download article body
             body = fetch_article_body(article["url"])
             if not body:
                 continue
 
-            # Filtrar por keywords de recomendação
+            # Filter by recommendation keywords
             if not has_recommendation_keywords(body):
                 continue
 
             articles_relevant += 1
 
-            # Salvar clipping bruto
+            # Save raw clipping
             clipping_id = save_clipping(conn, ticker, article, body)
             if not clipping_id:
-                continue  # artigo duplicado
+                continue  # duplicate article
 
-            # Extrair com LLM
+            # Extract with LLM
             result = extract_with_llm(
                 ticker,
                 body,
@@ -853,7 +853,7 @@ def run_collector(ticker: str, since: str = "2022-01-01"):
             if not result or not result.get("recommendations"):
                 continue
 
-            # Atualizar data do artigo se LLM detectou
+            # Update article date if LLM detected it
             if result.get("article_date") and not article.get("date"):
                 conn.execute(
                     "UPDATE clipping_raw SET article_date=? WHERE id=?",
@@ -862,16 +862,16 @@ def run_collector(ticker: str, since: str = "2022-01-01"):
                 conn.commit()
 
             for rec in result["recommendations"]:
-                # Só salvar recomendações acima do threshold mínimo
+                # Only save recommendations above minimum threshold
                 if rec.get("confidence", 0) < CONFIDENCE_REVIEW:
                     continue
 
-                # Só salvar se for sobre o ticker buscado (ou ticker próximo)
+                # Only save if it's about the searched ticker (or close ticker)
                 rec_ticker = rec.get("ticker", "").upper()
                 if rec_ticker and rec_ticker != ticker and ticker not in rec_ticker:
                     continue
 
-                # Garantir ticker correto
+                # Ensure correct ticker
                 rec["ticker"] = ticker
 
                 save_extraction(conn, clipping_id, rec, json.dumps(rec, ensure_ascii=False))
@@ -880,36 +880,36 @@ def run_collector(ticker: str, since: str = "2022-01-01"):
                 if rec.get("confidence", 0) >= CONFIDENCE_AUTO:
                     extractions_auto += 1
 
-    # Importar aprovadas automaticamente
+    # Auto-import approved extractions
     imported = import_approved_to_recommendations(conn)
 
     print(f"\n{'─'*55}")
-    print(f"  Artigos encontrados:    {articles_found:>4}")
-    print(f"  Com recomendações:      {articles_relevant:>4}")
-    print(f"  Extrações salvas:       {extractions_total:>4}")
-    print(f"  Auto-aprovadas:         {extractions_auto:>4}")
-    print(f"  Importadas p/ banco:    {imported:>4}")
+    print(f"  Articles found:         {articles_found:>4}")
+    print(f"  With recommendations:   {articles_relevant:>4}")
+    print(f"  Extractions saved:      {extractions_total:>4}")
+    print(f"  Auto-approved:          {extractions_auto:>4}")
+    print(f"  Imported to database:   {imported:>4}")
     pending = extractions_total - extractions_auto
     if pending > 0:
-        print(f"  ⚠️  Pendentes revisão:   {pending:>4}  → rode: python collector_br.py --review")
+        print(f"  ⚠️  Pending review:       {pending:>4}  → run: python collector_br.py --review")
     print(f"{'─'*55}\n")
 
     conn.close()
 
 
 def run_all(since: str = "2022-01-01"):
-    """Coleta para todos os tickers BR."""
+    """Collects for all BR tickers."""
     for ticker in BR_TICKERS:
         run_collector(ticker, since=since)
         time.sleep(2)
 
 
 # ─────────────────────────────────────────────
-# REVISÃO MANUAL
+# MANUAL REVIEW
 # ─────────────────────────────────────────────
 
 def show_pending_reviews():
-    """Lista extrações pendentes de revisão."""
+    """Lists extractions pending review."""
     conn   = get_connection()
     cursor = conn.cursor()
 
@@ -926,24 +926,24 @@ def show_pending_reviews():
     conn.close()
 
     if not rows:
-        print("\n✅ Nenhuma extração pendente de revisão.\n")
+        print("\n✅ No extractions pending review.\n")
         return
 
     print(f"\n{'═'*80}")
-    print(f"  📋  EXTRAÇÕES PENDENTES DE REVISÃO ({len(rows)} itens)")
+    print(f"  📋  EXTRACTIONS PENDING REVIEW ({len(rows)} items)")
     print(f"{'═'*80}")
 
     for row in rows:
-        pt  = f"R$ {row['price_target']:.2f}" if row["price_target"] else "sem target"
+        pt  = f"R$ {row['price_target']:.2f}" if row["price_target"] else "no target"
         dir_icon = "📈" if row["direction"] == "buy" else "📉" if row["direction"] == "sell" else "➡️"
-        print(f"\n  ID #{row['id']}  [{row['confidence']:.0%} confiança]")
+        print(f"\n  ID #{row['id']}  [{row['confidence']:.0%} confidence]")
         print(f"  {dir_icon} {row['analyst_name']} → {row['ticker']} {row['direction'].upper()} @ {pt}")
-        print(f"  📅 {row['rec_date'] or 'data desconhecida'}  |  {row['source_name']}")
+        print(f"  📅 {row['rec_date'] or 'unknown date'}  |  {row['source_name']}")
         print(f"  💬 {row['notes'][:100] if row['notes'] else '—'}")
         print(f"  🔗 {row['article_url'][:80]}")
         print(f"  {'─'*76}")
-        print(f"  Aprovar:  python collector_br.py --approve {row['id']}")
-        print(f"  Rejeitar: python collector_br.py --reject  {row['id']}")
+        print(f"  Approve:  python collector_br.py --approve {row['id']}")
+        print(f"  Reject:   python collector_br.py --reject  {row['id']}")
 
     print(f"\n{'═'*80}\n")
 
@@ -958,9 +958,9 @@ def approve_extraction(extraction_id: int):
     if cursor.rowcount:
         conn.commit()
         imported = import_approved_to_recommendations(conn)
-        print(f"✅ Extração #{extraction_id} aprovada e importada ({imported} rec inserida).")
+        print(f"✅ Extraction #{extraction_id} approved and imported ({imported} rec inserted).")
     else:
-        print(f"❌ Extração #{extraction_id} não encontrada.")
+        print(f"❌ Extraction #{extraction_id} not found.")
     conn.close()
 
 
@@ -973,14 +973,14 @@ def reject_extraction(extraction_id: int):
     )
     if cursor.rowcount:
         conn.commit()
-        print(f"🗑️  Extração #{extraction_id} rejeitada.")
+        print(f"🗑️  Extraction #{extraction_id} rejected.")
     else:
-        print(f"❌ Extração #{extraction_id} não encontrada.")
+        print(f"❌ Extraction #{extraction_id} not found.")
     conn.close()
 
 
 def show_clipping_stats():
-    """Resumo geral do clipping."""
+    """General clipping summary."""
     conn   = get_connection()
     cursor = conn.cursor()
 
@@ -1002,17 +1002,17 @@ def show_clipping_stats():
     conn.close()
 
     print(f"\n{'─'*50}")
-    print(f"  📊  Clipping BR — Resumo")
+    print(f"  📊  Clipping BR — Summary")
     print(f"{'─'*50}")
-    print(f"  Artigos coletados:  {total_articles:>5}")
-    print(f"  Aprovadas:          {status_counts.get('approved', 0):>5}")
-    print(f"  Importadas:         {status_counts.get('imported', 0):>5}")
-    print(f"  Pendentes revisão:  {status_counts.get('pending', 0):>5}")
-    print(f"  Rejeitadas:         {status_counts.get('rejected', 0):>5}")
+    print(f"  Articles collected:  {total_articles:>5}")
+    print(f"  Approved:            {status_counts.get('approved', 0):>5}")
+    print(f"  Imported:            {status_counts.get('imported', 0):>5}")
+    print(f"  Pending review:      {status_counts.get('pending', 0):>5}")
+    print(f"  Rejected:            {status_counts.get('rejected', 0):>5}")
     if by_ticker:
-        print(f"\n  Por ticker:")
+        print(f"\n  By ticker:")
         for row in by_ticker:
-            print(f"    {row['ticker']:<10} {row['n']:>4} recomendações")
+            print(f"    {row['ticker']:<10} {row['n']:>4} recommendations")
     print(f"{'─'*50}\n")
 
 
@@ -1025,21 +1025,21 @@ def parse_args():
         description="Analyst Tracker — Collector BR (clipping + LLM)"
     )
     parser.add_argument("--ticker",  "-t", type=str,  default=None,
-                        help="Ticker BR (ex: VALE3, PETR4)")
+                        help="BR Ticker (e.g.: VALE3, PETR4)")
     parser.add_argument("--all",     "-a", action="store_true",
-                        help=f"Coletar todos os tickers BR: {', '.join(BR_TICKERS)}")
+                        help=f"Collect all BR tickers: {', '.join(BR_TICKERS)}")
     parser.add_argument("--since",   "-s", type=str,  default="2022-01-01",
-                        help="Data de início (YYYY-MM-DD). Padrão: 2022-01-01")
+                        help="Start date (YYYY-MM-DD). Default: 2022-01-01")
     parser.add_argument("--review",  "-r", action="store_true",
-                        help="Listar extrações pendentes de revisão")
+                        help="List extractions pending review")
     parser.add_argument("--approve", type=int, default=None, metavar="ID",
-                        help="Aprovar extração pelo ID")
+                        help="Approve extraction by ID")
     parser.add_argument("--reject",  type=int, default=None, metavar="ID",
-                        help="Rejeitar extração pelo ID")
+                        help="Reject extraction by ID")
     parser.add_argument("--stats",   action="store_true",
-                        help="Mostrar resumo do clipping")
+                        help="Show clipping summary")
     parser.add_argument("--import-approved", action="store_true",
-                        help="Importar todas as extrações aprovadas para recommendations")
+                        help="Import all approved extractions to recommendations")
     return parser.parse_args()
 
 
@@ -1063,12 +1063,12 @@ if __name__ == "__main__":
         migrate_clipping_table(conn)
         n = import_approved_to_recommendations(conn)
         conn.close()
-        print(f"✅ {n} recomendações importadas.")
+        print(f"✅ {n} recommendations imported.")
 
     elif args.all:
-        print(f"\n🚀 Collector BR — todos os tickers")
+        print(f"\n🚀 Collector BR — all tickers")
         print(f"   Tickers: {', '.join(BR_TICKERS)}")
-        print(f"   Desde:   {args.since}\n")
+        print(f"   Since:   {args.since}\n")
         run_all(since=args.since)
 
     elif args.ticker:
@@ -1076,5 +1076,5 @@ if __name__ == "__main__":
 
     else:
         print("\n🚀 Analyst Tracker — Collector BR")
-        print("   Use --ticker VALE3, --all, --review ou --stats")
-        print("   Exemplo: python collector_br.py --ticker VALE3 --since 2022-01-01\n")
+        print("   Use --ticker VALE3, --all, --review or --stats")
+        print("   Example: python collector_br.py --ticker VALE3 --since 2022-01-01\n")

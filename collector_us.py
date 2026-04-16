@@ -1,26 +1,26 @@
 """
 Analyst Tracker — Collector US
 ================================
-Coleta histórico de ratings e preços-alvo de analistas americanos
+Collects historical ratings and price targets from US analysts
 via StockAnalysis.com (/stocks/{ticker}/ratings/).
 
-Fluxo v2 (modelo de posições):
-  1. Baixa a página de ratings de cada ticker
-  2. Parseia a tabela HTML (analista, firma, rating, price target, data)
-  3. Normaliza direção (Strong Buy/Buy → buy, Hold → hold, Sell → sell)
-  4. Processa ratings do mais antigo ao mais recente:
-     - Sem posição aberta → abre nova posição
-     - Mesma direção → revisão (target_up, target_down ou reiterate)
-     - Direção diferente → fecha posição atual + abre nova
-  5. Cria analistas/fontes automaticamente se não existirem
+Flow v2 (position model):
+  1. Downloads the ratings page for each ticker
+  2. Parses the HTML table (analyst, firm, rating, price target, date)
+  3. Normalizes direction (Strong Buy/Buy → buy, Hold → hold, Sell → sell)
+  4. Processes ratings from oldest to newest:
+     - No open position → opens new position
+     - Same direction → revision (target_up, target_down or reiterate)
+     - Different direction → closes current position + opens new
+  5. Creates analysts/sources automatically if they don't exist
 
-Uso:
-    python collector_us.py                        # todos os tickers
-    python collector_us.py --ticker NVDA          # ticker específico
-    python collector_us.py --since 2022-01-01     # filtrar por data
-    python collector_us.py --stats                # resumo do que foi coletado
+Usage:
+    python collector_us.py                        # all tickers
+    python collector_us.py --ticker NVDA          # specific ticker
+    python collector_us.py --since 2022-01-01     # filter by date
+    python collector_us.py --stats                # summary of collected data
 
-Dependências:
+Dependencies:
     pip install requests beautifulsoup4
 """
 
@@ -37,12 +37,12 @@ try:
     import requests
     from bs4 import BeautifulSoup
 except ImportError:
-    print("❌ Rode: pip install requests beautifulsoup4")
+    print("❌ Run: pip install requests beautifulsoup4")
     sys.exit(1)
 
 DB_PATH       = "analyst_tracker.db"
 BASE_URL      = "https://stockanalysis.com/stocks/{ticker}/ratings/"
-SLEEP_BETWEEN = 2.5   # segundos entre requests — respeitar o site
+SLEEP_BETWEEN = 2.5   # seconds between requests — respect the site
 DEFAULT_SINCE = "2022-01-01"
 
 US_TICKERS = [
@@ -106,7 +106,7 @@ RATING_MAP = {
 
 
 # ─────────────────────────────────────────────
-# CONEXÃO
+# CONNECTION
 # ─────────────────────────────────────────────
 
 def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
@@ -118,7 +118,7 @@ def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
 
 
 # ─────────────────────────────────────────────
-# NORMALIZAÇÃO
+# NORMALIZATION
 # ─────────────────────────────────────────────
 
 def normalize_direction(rating_text: str) -> str | None:
@@ -168,10 +168,10 @@ def fetch_ratings_page(ticker: str) -> str | None:
         resp.raise_for_status()
         return resp.text
     except requests.HTTPError as e:
-        print(f"  ❌ HTTP {e.response.status_code} para {ticker}")
+        print(f"  ❌ HTTP {e.response.status_code} for {ticker}")
         return None
     except Exception as e:
-        print(f"  ❌ Erro ao buscar {ticker}: {e}")
+        print(f"  ❌ Error fetching {ticker}: {e}")
         return None
 
 
@@ -188,7 +188,7 @@ def parse_ratings_table(html: str, ticker: str, since: str = DEFAULT_SINCE) -> l
             break
 
     if not target_table:
-        print(f"  ⚠️  Tabela não encontrada para {ticker} — pode ser renderização JS")
+        print(f"  ⚠️  Table not found for {ticker} — may be JS rendering")
         return []
 
     headers = [th.get_text(strip=True).lower() for th in target_table.find_all("th")]
@@ -245,7 +245,7 @@ def parse_ratings_table(html: str, ticker: str, since: str = DEFAULT_SINCE) -> l
 
         results.append({
             "ticker":       ticker.upper(),
-            "analyst_name": analyst_name or "Equipe Research",
+            "analyst_name": analyst_name or "Research Team",
             "firm_name":    firm_name    or "Unknown",
             "direction":    direction,
             "price_target": price_target,
@@ -258,7 +258,7 @@ def parse_ratings_table(html: str, ticker: str, since: str = DEFAULT_SINCE) -> l
 
 
 # ─────────────────────────────────────────────
-# HELPERS DE BANCO — ANALISTAS / FONTES
+# DATABASE HELPERS — ANALYSTS / SOURCES
 # ─────────────────────────────────────────────
 
 def get_or_create_source(conn: sqlite3.Connection, firm_name: str) -> int:
@@ -313,7 +313,7 @@ def get_price_at_date(conn: sqlite3.Connection, asset_id: int, rec_date: str) ->
 
 
 # ─────────────────────────────────────────────
-# HELPERS DE POSIÇÃO (por ID direto)
+# POSITION HELPERS (by direct ID)
 # ─────────────────────────────────────────────
 
 def revision_exists(
@@ -322,7 +322,7 @@ def revision_exists(
     asset_id: int,
     rec_date: str
 ) -> bool:
-    """Verifica se já existe revisão para esse analista+ativo na data exata."""
+    """Checks if a revision already exists for this analyst+asset on the exact date."""
     cursor = conn.cursor()
     cursor.execute(
         """SELECT r.id FROM recommendations r
@@ -339,7 +339,7 @@ def get_open_position(
     analyst_id: int,
     asset_id: int
 ) -> sqlite3.Row | None:
-    """Retorna a posição aberta do analista no ativo, ou None."""
+    """Returns the analyst's open position on the asset, or None."""
     cursor = conn.cursor()
     cursor.execute(
         """SELECT id, direction, final_target, target_upgrades, target_downgrades
@@ -361,7 +361,7 @@ def open_position_by_id(
     source_url: str | None = None,
     notes: str | None = None
 ) -> int:
-    """Cria nova posição e o registro 'open' em recommendations. Retorna position_id."""
+    """Creates new position and 'open' record in recommendations. Returns position_id."""
     cursor = conn.cursor()
     cursor.execute(
         """INSERT INTO positions
@@ -396,7 +396,7 @@ def update_position_by_id(
     source_url: str | None = None,
     notes: str | None = None
 ) -> str:
-    """Adiciona revisão a posição existente. Retorna rec_type detectado."""
+    """Adds revision to existing position. Returns detected rec_type."""
     cursor = conn.cursor()
 
     if new_target is None or old_target is None:
@@ -454,8 +454,8 @@ def close_position_by_id(
     notes: str | None = None
 ) -> int | None:
     """
-    Fecha posição e registra revisão 'close'.
-    Se new_direction difere do atual, abre nova posição. Retorna novo position_id ou None.
+    Closes position and records 'close' revision.
+    If new_direction differs from current, opens new position. Returns new position_id or None.
     """
     cursor = conn.cursor()
 
@@ -475,7 +475,7 @@ def close_position_by_id(
     )
     conn.commit()
 
-    # Se mudou de direção, abre nova posição
+    # If direction changed, open new position
     new_pos_id = None
     if new_direction and new_direction.lower() != old_direction.lower() and analyst_id and asset_id:
         new_pos_id = open_position_by_id(
@@ -486,19 +486,19 @@ def close_position_by_id(
 
 
 # ─────────────────────────────────────────────
-# PERSISTÊNCIA — POSIÇÕES E REVISÕES
+# PERSISTENCE — POSITIONS AND REVISIONS
 # ─────────────────────────────────────────────
 
 def save_ratings(conn: sqlite3.Connection, ratings: list[dict]) -> tuple[int, int]:
     """
-    Processa lista de ratings e cria/atualiza posições no banco.
-    Ratings são processados do mais antigo ao mais recente.
-    Retorna (inseridos, duplicatas).
+    Processes list of ratings and creates/updates positions in the database.
+    Ratings are processed from oldest to newest.
+    Returns (inserted, duplicates).
     """
     inserted   = 0
     duplicates = 0
 
-    # Processar do mais antigo para o mais recente
+    # Process from oldest to newest
     ratings_sorted = sorted(ratings, key=lambda r: r["rec_date"])
 
     for r in ratings_sorted:
@@ -509,7 +509,7 @@ def save_ratings(conn: sqlite3.Connection, ratings: list[dict]) -> tuple[int, in
         source_id  = get_or_create_source(conn, r["firm_name"])
         analyst_id = get_or_create_analyst(conn, r["analyst_name"], source_id)
 
-        # Deduplicação: já existe revisão nesta data para este analista+ativo?
+        # Deduplication: does a revision already exist on this date for this analyst+asset?
         if revision_exists(conn, analyst_id, asset_id, r["rec_date"]):
             duplicates += 1
             continue
@@ -524,7 +524,7 @@ def save_ratings(conn: sqlite3.Connection, ratings: list[dict]) -> tuple[int, in
         open_pos = get_open_position(conn, analyst_id, asset_id)
 
         if not open_pos:
-            # Sem posição aberta → abrir nova
+            # No open position → open new
             open_position_by_id(
                 conn, analyst_id, asset_id, direction, rec_date,
                 price_at_rec, price_target, source_url, notes
@@ -532,7 +532,7 @@ def save_ratings(conn: sqlite3.Connection, ratings: list[dict]) -> tuple[int, in
             inserted += 1
 
         elif open_pos["direction"] == direction:
-            # Mesma direção → revisão (target up/down/reiterate)
+            # Same direction → revision (target up/down/reiterate)
             update_position_by_id(
                 conn, open_pos["id"], rec_date, price_at_rec,
                 old_target=open_pos["final_target"],
@@ -544,7 +544,7 @@ def save_ratings(conn: sqlite3.Connection, ratings: list[dict]) -> tuple[int, in
             inserted += 1
 
         else:
-            # Direção mudou → fechar + abrir nova
+            # Direction changed → close + open new
             close_position_by_id(
                 conn, open_pos["id"], rec_date, price_at_rec,
                 old_direction=open_pos["direction"],
@@ -570,8 +570,8 @@ def run_collector(ticker: str, since: str = DEFAULT_SINCE):
 
     asset_id = get_asset_id(conn, ticker)
     if not asset_id:
-        print(f"  ⚠️  Ticker {ticker} não encontrado no banco.")
-        print(f"     Rode analyst_tracker_setup.py primeiro.")
+        print(f"  ⚠️  Ticker {ticker} not found in database.")
+        print(f"     Run analyst_tracker_setup.py first.")
         conn.close()
         return 0, 0
 
@@ -585,19 +585,19 @@ def run_collector(ticker: str, since: str = DEFAULT_SINCE):
     ratings = parse_ratings_table(html, ticker, since=since)
 
     if not ratings:
-        print(f"0 ratings encontrados (tabela JS ou sem dados desde {since})")
+        print(f"0 ratings found (JS table or no data since {since})")
         conn.close()
         return 0, 0
 
     inserted, duplicates = save_ratings(conn, ratings)
-    print(f"{len(ratings):>4} ratings parseados → {inserted:>4} inseridos/revisados, {duplicates:>4} duplicatas")
+    print(f"{len(ratings):>4} ratings parsed → {inserted:>4} inserted/revised, {duplicates:>4} duplicates")
 
     conn.close()
     return inserted, duplicates
 
 
 def run_all(since: str = DEFAULT_SINCE):
-    print(f"\n🚀 Collector US v2 — {len(US_TICKERS)} tickers | desde {since}\n")
+    print(f"\n🚀 Collector US v2 — {len(US_TICKERS)} tickers | since {since}\n")
 
     total_inserted   = 0
     total_duplicates = 0
@@ -612,17 +612,17 @@ def run_all(since: str = DEFAULT_SINCE):
             total_inserted   += ins
             total_duplicates += dup
         except Exception as e:
-            print(f"❌ Erro inesperado: {e}")
+            print(f"❌ Unexpected error: {e}")
             failed.append(ticker)
 
         if i < len(US_TICKERS):
             time.sleep(SLEEP_BETWEEN)
 
     print(f"\n{'─'*55}")
-    print(f"  ✅ Total inserido:    {total_inserted:>5} revisões/posições")
-    print(f"  ♻️  Duplicatas:        {total_duplicates:>5}")
+    print(f"  ✅ Total inserted:    {total_inserted:>5} revisions/positions")
+    print(f"  ♻️  Duplicates:        {total_duplicates:>5}")
     if failed:
-        print(f"  ❌ Falhas:           {', '.join(failed)}")
+        print(f"  ❌ Failures:         {', '.join(failed)}")
     print(f"{'─'*55}")
 
     conn   = get_connection()
@@ -638,9 +638,9 @@ def run_all(since: str = DEFAULT_SINCE):
     n_positions = cursor.fetchone()["n"]
     conn.close()
 
-    print(f"  📊 Posições US no banco:  {n_positions}")
-    print(f"  👤 Analistas US:          {n_analysts}")
-    print(f"  🏢 Firmas US:             {n_sources}")
+    print(f"  📊 US positions in database: {n_positions}")
+    print(f"  👤 US analysts:             {n_analysts}")
+    print(f"  🏢 US firms:                {n_sources}")
     print(f"{'─'*55}\n")
 
 
@@ -653,7 +653,7 @@ def show_stats():
     cursor = conn.cursor()
 
     print(f"\n{'─'*65}")
-    print(f"  📊  Collector US — Resumo (modelo de posições)")
+    print(f"  📊  Collector US — Summary (position model)")
     print(f"{'─'*65}")
 
     cursor.execute(
@@ -674,18 +674,19 @@ def show_stats():
     rows = cursor.fetchall()
 
     if not rows:
-        print("  Nenhuma posição US encontrada.")
-        print("  Rode: python collector_us.py\n")
+        print("  No US positions found.")
+        print("  Run: python collector_us.py\n")
         conn.close()
         return
 
-    print(f"  {'Ticker':<8} {'Pos.':>5} {'Buy':>5} {'Hold':>5} {'Sell':>5} {'Aber.':>5}  {'Período'}")
+    print(f"  {'Ticker':<8} {'Pos.':>5} {'Buy':>5} {'Hold':>5} {'Sell':>5} {'Open':>5}  {'Period'}")
     print(f"  {'─'*8} {'─'*5} {'─'*5} {'─'*5} {'─'*5} {'─'*5}  {'─'*22}")
 
     for row in rows:
         period = f"{row['earliest']} → {row['latest']}"
         print(f"  {row['ticker']:<8} {row['posicoes']:>5} {row['buys']:>5} "
               f"{row['holds']:>5} {row['sells']:>5} {row['abertas']:>5}  {period}")
+
 
     cursor.execute(
         """SELECT COUNT(DISTINCT an.id) as analysts, COUNT(DISTINCT s.id) as firms
@@ -696,7 +697,7 @@ def show_stats():
            WHERE a.country = 'US'"""
     )
     agg = cursor.fetchone()
-    print(f"\n  Analistas únicos: {agg['analysts']}  |  Firmas: {agg['firms']}")
+    print(f"\n  Unique analysts: {agg['analysts']}  |  Firms: {agg['firms']}")
     print(f"{'─'*65}\n")
 
     conn.close()
@@ -742,9 +743,9 @@ def show_top_analysts(ticker: str = None, top_n: int = 15):
 
     scope = f" — {ticker.upper()}" if ticker else ""
     print(f"\n{'─'*60}")
-    print(f"  🏆  Top {top_n} Analistas US{scope}")
+    print(f"  🏆  Top {top_n} US Analysts{scope}")
     print(f"{'─'*60}")
-    print(f"  {'Analista':<28} {'Firma':<18} {'Pos.':>5} {'Buys':>5}")
+    print(f"  {'Analyst':<28} {'Firm':<18} {'Pos.':>5} {'Buys':>5}")
     print(f"  {'─'*28} {'─'*18} {'─'*5} {'─'*5}")
     for row in rows:
         print(f"  {row['analyst'][:27]:<28} {row['firm'][:17]:<18} {row['posicoes']:>5} {row['buys']:>5}")
@@ -757,18 +758,18 @@ def show_top_analysts(ticker: str = None, top_n: int = 15):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Analyst Tracker — Collector US v2 (modelo de posições)"
+        description="Analyst Tracker — Collector US v2 (position model)"
     )
     parser.add_argument("--ticker",  "-t", type=str, default=None,
-                        help=f"Ticker US (ex: NVDA). Padrão: todos ({', '.join(US_TICKERS)})")
+                        help=f"US Ticker (e.g.: NVDA). Default: all ({', '.join(US_TICKERS)})")
     parser.add_argument("--since",   "-s", type=str, default=DEFAULT_SINCE,
-                        help=f"Data início YYYY-MM-DD. Padrão: {DEFAULT_SINCE}")
+                        help=f"Start date YYYY-MM-DD. Default: {DEFAULT_SINCE}")
     parser.add_argument("--stats",   action="store_true",
-                        help="Resumo das posições US no banco")
+                        help="Summary of US positions in database")
     parser.add_argument("--top",     "-n", type=int, default=15,
-                        help="Top N analistas (padrão: 15)")
+                        help="Top N analysts (default: 15)")
     parser.add_argument("--analysts", action="store_true",
-                        help="Listar top analistas")
+                        help="List top analysts")
     return parser.parse_args()
 
 
@@ -788,4 +789,4 @@ if __name__ == "__main__":
 
     else:
         run_all(since=args.since)
-        print("✅ Próximo passo: python scoring_engine.py")
+        print("✅ Next step: python scoring_engine.py")
