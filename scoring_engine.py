@@ -539,6 +539,428 @@ def save_analyst_score(conn: sqlite3.Connection, score: dict):
 
 
 # ─────────────────────────────────────────────
+# YEARLY SCORE BREAKDOWN
+# ─────────────────────────────────────────────
+
+def compute_yearly_scores(conn: sqlite3.Connection, analyst_id: int) -> list[dict]:
+    """
+    Calcula scores separados por ano para um analista.
+    Permite detectar analistas em ascensão vs declínio.
+
+    Retorna lista de dicts, um por ano com dados suficientes:
+      [{year, positions, hit_rate, avg_direction_score, avg_target_score,
+        avg_alpha, wins, losses, trend}]
+    """
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT
+               perf.direction_score,
+               perf.target_score,
+               perf.hit_direction,
+               perf.return_pct,
+               perf.alpha_vs_spy,
+               perf.alpha_vs_ibov,
+               pos.open_date
+           FROM performance perf
+           JOIN positions pos ON pos.id = perf.position_id
+           WHERE pos.analyst_id = ?
+             AND perf.direction_score IS NOT NULL
+           ORDER BY pos.open_date ASC""",
+        (analyst_id,)
+    )
+    rows = cursor.fetchall()
+
+    if not rows:
+        return []
+
+    # Group by year
+    by_year: dict[int, list] = {}
+    for r in rows:
+        try:
+            year = int(r["open_date"][:4])
+        except (ValueError, TypeError):
+            continue
+        by_year.setdefault(year, []).append(r)
+
+    results = []
+    for year in sorted(by_year.keys()):
+        year_rows = by_year[year]
+        n = len(year_rows)
+        if n == 0:
+            continue
+
+        dir_scores = [r["direction_score"] for r in year_rows]
+        tgt_scores = [r["target_score"] for r in year_rows if r["target_score"] is not None]
+        hit_list   = [r["hit_direction"] for r in year_rows if r["hit_direction"] is not None]
+        all_alpha  = (
+            [r["alpha_vs_spy"]  for r in year_rows if r["alpha_vs_spy"]  is not None] +
+            [r["alpha_vs_ibov"] for r in year_rows if r["alpha_vs_ibov"] is not None]
+        )
+
+        wins   = sum(hit_list) if hit_list else 0
+        losses = len(hit_list) - wins if hit_list else 0
+
+        results.append({
+            "year":                year,
+            "positions":           n,
+            "hit_rate":            round(wins / len(hit_list), 4) if hit_list else None,
+            "avg_direction_score": round(sum(dir_scores) / len(dir_scores), 4) if dir_scores else None,
+            "avg_target_score":    round(sum(tgt_scores) / len(tgt_scores), 4) if tgt_scores else None,
+            "avg_alpha":           round(sum(all_alpha) / len(all_alpha), 4) if all_alpha else None,
+            "wins":                wins,
+            "losses":              losses,
+        })
+
+    # Compute trend based on direction score progression
+    dir_by_year = [(r["year"], r["avg_direction_score"]) for r in results if r["avg_direction_score"] is not None]
+    for r in results:
+        r["trend"] = "stable"
+
+    if len(dir_by_year) >= 2:
+        first_score = dir_by_year[0][1]
+        last_score  = dir_by_year[-1][1]
+        delta = last_score - first_score
+
+        if delta > 0.05:
+            trend = "ascending"
+        elif delta < -0.05:
+            trend = "declining"
+        else:
+            trend = "stable"
+
+        for r in results:
+            r["trend"] = trend
+
+    return results
+
+
+def print_yearly_scores(analyst_name: str):
+    """Imprime tabela de scores anuais para um analista."""
+    conn   = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT id, name FROM analysts WHERE name LIKE ?",
+        (f"%{analyst_name}%",)
+    )
+    analyst = cursor.fetchone()
+    if not analyst:
+        print(f"❌ Analista não encontrado: '{analyst_name}'")
+        conn.close()
+        return
+
+    yearly = compute_yearly_scores(conn, analyst["id"])
+    conn.close()
+
+    if not yearly:
+        print(f"❌ Sem dados de performance para {analyst['name']}")
+        return
+
+    trend_icon = {"ascending": "📈", "declining": "📉", "stable": "➡️"}
+    trend = yearly[0]["trend"]
+
+    print(f"\n{'═'*72}")
+    print(f"  📊  Scores Anuais — {analyst['name']}  {trend_icon.get(trend, '')} {trend}")
+    print(f"{'═'*72}")
+    print(f"  {'Ano':<6} {'Pos.':>5} {'Hit%':>6} {'Dir':>6} {'Tgt':>6} {'Alpha':>8} {'W/L':>7}")
+    print(f"  {'─'*6} {'─'*5} {'─'*6} {'─'*6} {'─'*6} {'─'*8} {'─'*7}")
+
+    for r in yearly:
+        hr  = f"{r['hit_rate']:.0%}" if r["hit_rate"] is not None else "—"
+        ds  = f"{r['avg_direction_score']:.2f}" if r["avg_direction_score"] is not None else "—"
+        ts  = f"{r['avg_target_score']:.2f}" if r["avg_target_score"] is not None else "—"
+        alp = f"{r['avg_alpha']:+.1f}%" if r["avg_alpha"] is not None else "—"
+        wl  = f"{r['wins']}/{r['losses']}"
+        print(f"  {r['year']:<6} {r['positions']:>5} {hr:>6} {ds:>6} {ts:>6} {alp:>8} {wl:>7}")
+
+    print(f"{'═'*72}\n")
+
+
+# ─────────────────────────────────────────────
+# SIMULATED PORTFOLIO
+# ─────────────────────────────────────────────
+
+def simulate_portfolio(
+    conn: sqlite3.Connection,
+    analyst_id: int,
+    year: int | None = None
+) -> dict | None:
+    """
+    Simula o retorno de um portfólio equal-weight seguindo as calls de um analista.
+
+    Regras:
+      - Cada posição recebe peso 1/N (equal-weight)
+      - Não entra nova call no mesmo ativo se já tem posição aberta
+      - Retorno medido do open ao close (ou hoje/horizonte se ainda aberta)
+      - Compara vs benchmark por ano (SPY para US, ^BVSP para BR)
+
+    Se year=None, calcula todos os anos. Se year especificado, só aquele ano.
+
+    Retorna dict com:
+      {years: [{year, n_positions, return_pct, benchmark_return, alpha,
+                best_call, worst_call, monthly_equity}],
+       cumulative_return, cumulative_alpha, total_positions}
+    """
+    cursor = conn.cursor()
+
+    year_filter = ""
+    params = [analyst_id]
+    if year:
+        year_filter = "AND substr(pos.open_date, 1, 4) = ?"
+        params.append(str(year))
+
+    cursor.execute(
+        f"""SELECT
+               pos.id          AS pos_id,
+               pos.asset_id,
+               pos.direction,
+               pos.price_at_open,
+               pos.price_at_close,
+               pos.open_date,
+               pos.close_date,
+               pos.final_target,
+               pos.horizon_days,
+               ast.ticker,
+               ast.name         AS asset_name,
+               ast.country,
+               perf.return_pct,
+               perf.direction_score,
+               perf.alpha_vs_spy,
+               perf.alpha_vs_ibov
+           FROM positions pos
+           JOIN assets ast ON ast.id = pos.asset_id
+           LEFT JOIN performance perf ON perf.position_id = pos.id
+           WHERE pos.analyst_id = ?
+             {year_filter}
+             AND pos.price_at_open IS NOT NULL
+           ORDER BY pos.open_date ASC""",
+        params
+    )
+    positions = cursor.fetchall()
+
+    if not positions:
+        return None
+
+    # Group by year
+    by_year: dict[int, list] = {}
+    for p in positions:
+        try:
+            y = int(p["open_date"][:4])
+        except (ValueError, TypeError):
+            continue
+        by_year.setdefault(y, []).append(p)
+
+    yearly_results = []
+    cumulative_value = 1.0  # starts at 1.0 (100%)
+    total_positions = 0
+
+    for yr in sorted(by_year.keys()):
+        year_positions = by_year[yr]
+
+        # Filter: skip duplicate assets (only first position per asset per year)
+        seen_assets: set[int] = set()
+        filtered = []
+        for p in year_positions:
+            if p["asset_id"] not in seen_assets:
+                seen_assets.add(p["asset_id"])
+                filtered.append(p)
+        year_positions = filtered
+
+        n = len(year_positions)
+        if n == 0:
+            continue
+
+        total_positions += n
+
+        # Calculate equal-weight portfolio return
+        returns = []
+        best_call  = None
+        worst_call = None
+        best_ret   = -float("inf")
+        worst_ret  = float("inf")
+
+        for p in year_positions:
+            ret = p["return_pct"]
+            if ret is None:
+                # Calculate from prices if performance not computed yet
+                if p["price_at_close"] and p["price_at_open"] and p["price_at_open"] > 0:
+                    ret = ((p["price_at_close"] - p["price_at_open"]) / p["price_at_open"]) * 100
+                elif p["price_at_open"] and p["price_at_open"] > 0:
+                    # Open position — use current price
+                    horizon = p["horizon_days"] or DEFAULT_HORIZON
+                    eval_dt = datetime.strptime(p["open_date"], "%Y-%m-%d") + timedelta(days=horizon)
+                    eval_date = min(eval_dt.date(), date.today()).isoformat()
+                    price_eval = get_price_on_date(conn, p["asset_id"], eval_date)
+                    if price_eval:
+                        ret = ((price_eval - p["price_at_open"]) / p["price_at_open"]) * 100
+
+            if ret is not None:
+                # Adjust for direction: sell positions gain when price drops
+                if p["direction"] == "sell":
+                    ret = -ret
+                returns.append(ret)
+
+                if ret > best_ret:
+                    best_ret  = ret
+                    best_call = {"ticker": p["ticker"], "return_pct": round(ret, 2), "direction": p["direction"]}
+                if ret < worst_ret:
+                    worst_ret  = ret
+                    worst_call = {"ticker": p["ticker"], "return_pct": round(ret, 2), "direction": p["direction"]}
+
+        if not returns:
+            continue
+
+        # Equal-weight average return for the year
+        avg_return = sum(returns) / len(returns)
+
+        # Benchmark return for the year
+        year_start = f"{yr}-01-01"
+        year_end   = f"{yr}-12-31" if yr < date.today().year else date.today().isoformat()
+
+        # Determine dominant market from positions
+        us_count = sum(1 for p in year_positions if p["country"] == "US")
+        br_count = sum(1 for p in year_positions if p["country"] == "BR")
+        primary_country = "US" if us_count >= br_count else "BR"
+
+        bench_return = get_benchmark_return(conn, primary_country, year_start, year_end)
+        alpha = round(avg_return - bench_return, 2) if bench_return is not None else None
+
+        # Monthly equity curve for this year
+        monthly_equity = _compute_monthly_equity(conn, year_positions, yr)
+
+        cumulative_value *= (1 + avg_return / 100)
+
+        yearly_results.append({
+            "year":             yr,
+            "n_positions":      n,
+            "return_pct":       round(avg_return, 2),
+            "benchmark_return": round(bench_return, 2) if bench_return is not None else None,
+            "alpha":            alpha,
+            "best_call":        best_call,
+            "worst_call":       worst_call,
+            "monthly_equity":   monthly_equity,
+        })
+
+    if not yearly_results:
+        return None
+
+    cumulative_return = round((cumulative_value - 1) * 100, 2)
+
+    # Cumulative benchmark
+    all_years = [r["benchmark_return"] for r in yearly_results if r["benchmark_return"] is not None]
+    cumulative_bench = 1.0
+    for br in all_years:
+        cumulative_bench *= (1 + br / 100)
+    cumulative_bench_return = round((cumulative_bench - 1) * 100, 2)
+    cumulative_alpha = round(cumulative_return - cumulative_bench_return, 2)
+
+    return {
+        "years":              yearly_results,
+        "cumulative_return":  cumulative_return,
+        "cumulative_bench":   cumulative_bench_return,
+        "cumulative_alpha":   cumulative_alpha,
+        "total_positions":    total_positions,
+    }
+
+
+def _compute_monthly_equity(
+    conn: sqlite3.Connection,
+    positions: list,
+    year: int
+) -> list[dict]:
+    """
+    Computa equity curve mensal para um conjunto de posições em um ano.
+    Retorna lista de {month: 'YYYY-MM', equity: float} onde equity começa em 100.
+    """
+    monthly = []
+    equity = 100.0
+
+    for month in range(1, 13):
+        month_str = f"{year}-{month:02d}"
+        month_end = f"{year}-{month:02d}-28"  # approximate last day
+
+        # For each position open during this month, compute partial return
+        month_returns = []
+        for p in positions:
+            open_date = p["open_date"]
+            close_date = p["close_date"] or date.today().isoformat()
+
+            # Check if position was active during this month
+            if open_date > f"{month_str}-28" or close_date < f"{month_str}-01":
+                continue
+
+            # Get price at start and end of month (or open/close)
+            period_start = max(open_date, f"{month_str}-01")
+            period_end   = min(close_date, month_end)
+
+            p_start = get_price_on_date(conn, p["asset_id"], period_start, tolerance_days=10)
+            p_end   = get_price_on_date(conn, p["asset_id"], period_end, tolerance_days=10)
+
+            if p_start and p_end and p_start > 0:
+                ret = ((p_end - p_start) / p_start) * 100
+                if p["direction"] == "sell":
+                    ret = -ret
+                month_returns.append(ret)
+
+        if month_returns:
+            avg_ret = sum(month_returns) / len(month_returns)
+            equity *= (1 + avg_ret / 100)
+
+        monthly.append({"month": month_str, "equity": round(equity, 2)})
+
+        # Stop if we're past the current date
+        if year == date.today().year and month >= date.today().month:
+            break
+
+    return monthly
+
+
+def print_portfolio(analyst_name: str):
+    """Imprime simulação de portfólio para um analista."""
+    conn   = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT id, name FROM analysts WHERE name LIKE ?",
+        (f"%{analyst_name}%",)
+    )
+    analyst = cursor.fetchone()
+    if not analyst:
+        print(f"❌ Analista não encontrado: '{analyst_name}'")
+        conn.close()
+        return
+
+    result = simulate_portfolio(conn, analyst["id"])
+    conn.close()
+
+    if not result:
+        print(f"❌ Sem dados para simular portfólio de {analyst['name']}")
+        return
+
+    print(f"\n{'═'*80}")
+    print(f"  💼  Portfólio Simulado — {analyst['name']}")
+    print(f"  \"Se você tivesse seguido esse analista, quanto teria ganho?\"")
+    print(f"{'═'*80}")
+    print(f"  {'Ano':<6} {'Pos.':>5} {'Retorno':>9} {'Bench':>9} {'Alpha':>9} {'Melhor':>18} {'Pior':>18}")
+    print(f"  {'─'*6} {'─'*5} {'─'*9} {'─'*9} {'─'*9} {'─'*18} {'─'*18}")
+
+    for yr in result["years"]:
+        ret   = f"{yr['return_pct']:+.1f}%"
+        bench = f"{yr['benchmark_return']:+.1f}%" if yr["benchmark_return"] is not None else "—"
+        alpha = f"{yr['alpha']:+.1f}%" if yr["alpha"] is not None else "—"
+        best  = f"{yr['best_call']['ticker']} {yr['best_call']['return_pct']:+.1f}%" if yr["best_call"] else "—"
+        worst = f"{yr['worst_call']['ticker']} {yr['worst_call']['return_pct']:+.1f}%" if yr["worst_call"] else "—"
+        print(f"  {yr['year']:<6} {yr['n_positions']:>5} {ret:>9} {bench:>9} {alpha:>9} {best:>18} {worst:>18}")
+
+    print(f"  {'─'*80}")
+    print(f"  Retorno cumulativo:  {result['cumulative_return']:+.1f}%")
+    print(f"  Benchmark cumulativo: {result['cumulative_bench']:+.1f}%")
+    print(f"  Alpha cumulativo:    {result['cumulative_alpha']:+.1f}%")
+    print(f"  Total de posições:   {result['total_positions']}")
+    print(f"{'═'*80}\n")
+
+
+# ─────────────────────────────────────────────
 # AUTO-CLOSE DE POSIÇÕES EXPIRADAS
 # ─────────────────────────────────────────────
 
@@ -860,6 +1282,10 @@ def parse_args():
                         help="Fechar posições expiradas antes de calcular scores")
     parser.add_argument("--dry-run",    "-d", action="store_true",
                         help="Mostrar quais posições seriam fechadas sem alterar o banco")
+    parser.add_argument("--yearly",     "-y", type=str,  default=None, metavar="ANALYST",
+                        help="Mostrar scores anuais de um analista (ex: --yearly 'Dan Ives')")
+    parser.add_argument("--portfolio",  "-p", type=str,  default=None, metavar="ANALYST",
+                        help="Simular portfólio de um analista (ex: --portfolio 'Dan Ives')")
     return parser.parse_args()
 
 
@@ -884,6 +1310,12 @@ if __name__ == "__main__":
 
     elif args.ticker:
         best_analysts_for_ticker(args.ticker, top_n=args.top)
+
+    elif args.yearly:
+        print_yearly_scores(args.yearly)
+
+    elif args.portfolio:
+        print_portfolio(args.portfolio)
 
     else:
         print("\n🚀 Analyst Tracker — Scoring Engine v2 (por posição)")
