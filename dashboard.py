@@ -59,10 +59,11 @@ st.markdown("""
     --bg:        #0d0f14;
     --bg2:       #13161e;
     --bg3:       #1a1e2a;
-    --border:    #252a38;
-    --text:      #e2e6f0;
-    --muted:     #6b7490;
-    --accent:    #4f9cf9;
+    --border:    #2d3348;
+    --text:      #eef0f6;
+    --text-sec:  #c0c6d8;
+    --muted:     #8d95b0;
+    --accent:    #5ba8ff;
     --green:     #3ecf8e;
     --red:       #f96060;
     --amber:     #f9c74f;
@@ -76,14 +77,37 @@ html, body, [class*="css"] {
 }
 
 /* Header */
-h1 { font-family: 'DM Serif Display', serif; font-size: 2.2rem; color: var(--text); letter-spacing: -0.02em; }
-h2 { font-family: 'DM Sans', sans-serif; font-weight: 600; font-size: 1.1rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+h1 { font-family: 'DM Serif Display', serif; font-size: 2.2rem; color: #ffffff; letter-spacing: -0.02em; }
+h2 { font-family: 'DM Sans', sans-serif; font-weight: 600; font-size: 1.1rem; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.08em; }
 h3 { font-family: 'DM Sans', sans-serif; font-weight: 500; color: var(--text); }
 
 /* Sidebar */
 section[data-testid="stSidebar"] {
     background-color: var(--bg2);
     border-right: 1px solid var(--border);
+}
+
+/* Sidebar radio labels — high contrast */
+section[data-testid="stSidebar"] label,
+section[data-testid="stSidebar"] .stRadio label,
+section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
+section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] span {
+    color: var(--text) !important;
+    font-size: 0.95rem !important;
+}
+section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label p {
+    color: var(--text) !important;
+    font-size: 1rem !important;
+    font-weight: 400 !important;
+}
+section[data-testid="stSidebar"] .stCaption, section[data-testid="stSidebar"] small {
+    color: var(--muted) !important;
+}
+
+/* Caption text — more readable */
+.stCaption, [data-testid="stCaptionContainer"] {
+    color: var(--text-sec) !important;
+    font-size: 0.85rem !important;
 }
 
 /* Metric cards */
@@ -95,7 +119,7 @@ div[data-testid="metric-container"] {
 }
 div[data-testid="metric-container"] label {
     color: var(--muted) !important;
-    font-size: 0.72rem !important;
+    font-size: 0.78rem !important;
     text-transform: uppercase;
     letter-spacing: 0.1em;
     font-family: 'DM Mono', monospace !important;
@@ -103,14 +127,75 @@ div[data-testid="metric-container"] label {
 div[data-testid="metric-container"] div[data-testid="stMetricValue"] {
     font-family: 'DM Mono', monospace;
     font-size: 1.6rem;
+    color: #ffffff;
+}
+
+/* Dataframe — dark themed */
+div[data-testid="stDataFrame"] {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+}
+div[data-testid="stDataFrame"] table { color: var(--text) !important; }
+div[data-testid="stDataFrame"] th {
+    background-color: var(--bg3) !important;
+    color: var(--text-sec) !important;
+    border-bottom: 1px solid var(--border) !important;
+}
+div[data-testid="stDataFrame"] td {
+    color: var(--text) !important;
+    border-bottom: 1px solid rgba(45, 51, 72, 0.5) !important;
+}
+/* Glide data grid (Streamlit's default table renderer) */
+div[data-testid="stDataFrame"] canvas + div {
+    color: var(--text) !important;
+}
+
+/* Selectbox / inputs — readable text */
+div[data-baseweb="select"] > div {
+    background: var(--bg3) !important;
+    border-color: var(--border) !important;
+}
+div[data-baseweb="select"] span,
+div[data-baseweb="select"] div[class*="ValueContainer"] {
+    color: var(--text) !important;
+}
+div[data-baseweb="input"] input,
+div[data-baseweb="select"] input {
+    color: var(--text) !important;
+}
+/* Dropdown menu */
+ul[role="listbox"] {
+    background-color: var(--bg3) !important;
+}
+ul[role="listbox"] li {
+    color: var(--text) !important;
+}
+ul[role="listbox"] li:hover {
+    background-color: var(--bg2) !important;
+}
+
+/* Number input */
+div[data-testid="stNumberInput"] input {
+    color: var(--text) !important;
+    background-color: var(--bg3) !important;
+}
+
+/* Multiselect pills */
+span[data-baseweb="tag"] {
+    background-color: var(--accent) !important;
+    color: #ffffff !important;
+}
+
+/* General paragraph & label text */
+p, span, label, .stMarkdown {
     color: var(--text);
 }
 
-/* Dataframe */
-div[data-testid="stDataFrame"] { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-
-/* Selectbox / inputs */
-div[data-baseweb="select"] > div { background: var(--bg3) !important; border-color: var(--border) !important; }
+/* Info / warning / error boxes */
+div[data-testid="stAlert"] {
+    color: var(--text) !important;
+}
 
 /* Divider */
 hr { border-color: var(--border); margin: 1.5rem 0; }
@@ -120,6 +205,13 @@ hr { border-color: var(--border); margin: 1.5rem 0; }
 .badge-sell   { background: rgba(249,96,96,0.15);  color: #f96060; padding: 2px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: 600; font-family: 'DM Mono', monospace; }
 .badge-hold   { background: rgba(249,199,79,0.15); color: #f9c74f; padding: 2px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: 600; font-family: 'DM Mono', monospace; }
 .score-pill   { font-family: 'DM Mono', monospace; font-size: 0.85rem; }
+
+/* Slider text */
+div[data-testid="stSlider"] label,
+div[data-testid="stSlider"] div[data-testid="stTickBarMin"],
+div[data-testid="stSlider"] div[data-testid="stTickBarMax"] {
+    color: var(--text-sec) !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
