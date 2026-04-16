@@ -509,75 +509,77 @@ elif "Analista" in page:
             )
             st.plotly_chart(fig, use_container_width=True)
 
-    # ── Yearly Score Breakdown ──
-    if SCORING_EXTRAS_AVAILABLE:
-        st.markdown("---")
-        st.markdown("### 📊 Scores Anuais")
-        try:
-            conn_yearly = get_conn()
-            analyst_row = conn_yearly.execute(
-                "SELECT id FROM analysts WHERE name = ?", (selected,)
-            ).fetchone()
+        # ── Yearly Score Breakdown ──
+        if SCORING_EXTRAS_AVAILABLE:
+            st.markdown("---")
+            st.markdown("### 📊 Scores Anuais")
+            try:
+                conn_yearly = get_conn()
+                analyst_row = conn_yearly.execute(
+                    "SELECT id FROM analysts WHERE name = ?", (selected,)
+                ).fetchone()
 
-            if analyst_row:
-                yearly = compute_yearly_scores(conn_yearly, analyst_row["id"])
-                if yearly:
-                    trend = yearly[0].get("trend", "stable")
-                    trend_icons = {"ascending": "📈 Em ascensão", "declining": "📉 Em declínio", "stable": "➡️ Estável"}
-                    st.caption(f"Tendência: **{trend_icons.get(trend, trend)}**")
+                if analyst_row:
+                    yearly = compute_yearly_scores(conn_yearly, analyst_row["id"])
+                    if yearly:
+                        trend = yearly[0].get("trend", "stable")
+                        trend_icons = {"ascending": "📈 Em ascensão", "declining": "📉 Em declínio", "stable": "➡️ Estável"}
+                        st.caption(f"Tendência: **{trend_icons.get(trend, trend)}**")
 
-                    yearly_data = []
-                    for yr in yearly:
-                        yearly_data.append({
-                            "Ano":       yr["year"],
-                            "Posições":  yr["positions"],
-                            "Hit Rate":  f"{yr['hit_rate']:.0%}" if yr["hit_rate"] is not None else "—",
-                            "Direction": fmt_score(yr["avg_direction_score"]),
-                            "Target":    fmt_score(yr["avg_target_score"]),
-                            "Alpha":     fmt_pct(yr["avg_alpha"]),
-                            "W/L":       f"{yr['wins']}/{yr['losses']}",
-                        })
+                        yearly_data = []
+                        for yr in yearly:
+                            yearly_data.append({
+                                "Ano":       yr["year"],
+                                "Posições":  yr["positions"],
+                                "Hit Rate":  f"{yr['hit_rate']:.0%}" if yr["hit_rate"] is not None else "—",
+                                "Direction": fmt_score(yr["avg_direction_score"]),
+                                "Target":    fmt_score(yr["avg_target_score"]),
+                                "Alpha":     fmt_pct(yr["avg_alpha"]),
+                                "W/L":       f"{yr['wins']}/{yr['losses']}",
+                            })
 
-                    df_yearly = pd.DataFrame(yearly_data)
-                    st.dataframe(df_yearly, use_container_width=True, hide_index=True)
+                        df_yearly = pd.DataFrame(yearly_data)
+                        st.dataframe(df_yearly, use_container_width=True, hide_index=True)
 
-                    # Direction score trend chart
-                    if len(yearly) >= 2:
-                        dir_scores = [
-                            {"Ano": yr["year"], "Direction Score": yr["avg_direction_score"]}
-                            for yr in yearly if yr["avg_direction_score"] is not None
-                        ]
-                        if len(dir_scores) >= 2:
-                            df_trend = pd.DataFrame(dir_scores)
-                            fig_trend = go.Figure()
-                            fig_trend.add_trace(go.Scatter(
-                                x=df_trend["Ano"].astype(str),
-                                y=df_trend["Direction Score"],
-                                mode="lines+markers",
-                                line=dict(color="#3ecf8e", width=2),
-                                marker=dict(size=8),
-                                name="Direction Score",
-                            ))
-                            fig_trend.add_hline(
-                                y=0.5, line_dash="dot", line_color="#6b7490",
-                                annotation_text="Threshold 0.5"
-                            )
-                            fig_trend.update_layout(
-                                title="Evolução Direction Score por Ano",
-                                paper_bgcolor="rgba(0,0,0,0)",
-                                plot_bgcolor="rgba(19,22,30,1)",
-                                font_color="#e2e6f0",
-                                yaxis=dict(range=[0, 1.1]),
-                                height=280,
-                            )
-                            st.plotly_chart(fig_trend, use_container_width=True)
-                else:
-                    st.info("Sem dados anuais disponíveis para este analista.")
-        except Exception as e:
-            st.warning(f"Erro ao carregar scores anuais: {e}")
+                        # Direction score trend chart
+                        if len(yearly) >= 2:
+                            dir_scores = [
+                                {"Ano": yr["year"], "Direction Score": yr["avg_direction_score"]}
+                                for yr in yearly if yr["avg_direction_score"] is not None
+                            ]
+                            if len(dir_scores) >= 2:
+                                df_trend = pd.DataFrame(dir_scores)
+                                fig_trend = go.Figure()
+                                fig_trend.add_trace(go.Scatter(
+                                    x=df_trend["Ano"].astype(str),
+                                    y=df_trend["Direction Score"],
+                                    mode="lines+markers",
+                                    line=dict(color="#3ecf8e", width=2),
+                                    marker=dict(size=8),
+                                    name="Direction Score",
+                                ))
+                                fig_trend.add_hline(
+                                    y=0.5, line_dash="dot", line_color="#6b7490",
+                                    annotation_text="Threshold 0.5"
+                                )
+                                fig_trend.update_layout(
+                                    title="Evolução Direction Score por Ano",
+                                    paper_bgcolor="rgba(0,0,0,0)",
+                                    plot_bgcolor="rgba(19,22,30,1)",
+                                    font_color="#e2e6f0",
+                                    yaxis=dict(range=[0, 1.1]),
+                                    height=280,
+                                )
+                                st.plotly_chart(fig_trend, use_container_width=True)
+                    else:
+                        st.info("Sem dados anuais disponíveis para este analista.")
+            except Exception as e:
+                st.warning(f"Erro ao carregar scores anuais: {e}")
 
     else:
         st.info("Sem recomendações avaliadas para este analista.")
+
+
 
 
 # ─────────────────────────────────────────────
