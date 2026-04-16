@@ -652,9 +652,14 @@ elif "Portfólio" in page:
         st.markdown("---")
         st.markdown("### Curva de Equity")
         all_monthly = []
+        carry_equity = 100.0
         for yr in result["years"]:
-            for m in yr.get("monthly_equity", []):
-                all_monthly.append(m)
+            year_months = yr.get("monthly_equity", [])
+            if year_months:
+                scale = carry_equity / 100.0
+                for m in year_months:
+                    all_monthly.append({"month": m["month"], "equity": round(m["equity"] * scale, 2)})
+                carry_equity = all_monthly[-1]["equity"]
 
         if all_monthly:
             df_equity = pd.DataFrame(all_monthly)
