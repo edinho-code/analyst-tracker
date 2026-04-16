@@ -25,13 +25,19 @@ from plotly.subplots import make_subplots
 
 DB_PATH = "analyst_tracker.db"
 
-# Importar risk_engine se disponível
+# Importar risk_engine e scoring_engine se disponíveis
 try:
     sys.path.insert(0, str(Path(__file__).parent))
     from risk_engine import evaluate_call as _evaluate_call
     RISK_ENGINE_AVAILABLE = True
 except ImportError:
     RISK_ENGINE_AVAILABLE = False
+
+try:
+    from scoring_engine import compute_yearly_scores, simulate_portfolio
+    SCORING_EXTRAS_AVAILABLE = True
+except ImportError:
+    SCORING_EXTRAS_AVAILABLE = False
 
 # ─────────────────────────────────────────────
 # CONFIG DA PÁGINA
@@ -178,7 +184,7 @@ with st.sidebar:
 
     page = st.radio(
         "Navegação",
-        ["🏆 Ranking", "🔍 Analista", "📈 Ativo", "📰 Recomendações", "🎯 Risk Assessment", "📋 Clipping BR"],
+        ["🏆 Ranking", "🔍 Analista", "📈 Ativo", "📰 Recomendações", "💼 Portfólio", "🎯 Risk Assessment", "📋 Clipping BR"],
         label_visibility="collapsed"
     )
 
@@ -502,8 +508,220 @@ elif "Analista" in page:
                 height=280,
             )
             st.plotly_chart(fig, use_container_width=True)
+
+        # ── Yearly Score Breakdown ──
+        if SCORING_EXTRAS_AVAILABLE:
+            st.markdown("---")
+            st.markdown("### 📊 Scores Anuais")
+            try:
+                conn_yearly = get_conn()
+                analyst_row = conn_yearly.execute(
+                    "SELECT id FROM analysts WHERE name = ?", (selected,)
+                ).fetchone()
+
+                if analyst_row:
+                    yearly = compute_yearly_scores(conn_yearly, analyst_row["id"])
+                    if yearly:
+                        trend = yearly[0].get("trend", "stable")
+                        trend_icons = {"ascending": "📈 Em ascensão", "declining": "📉 Em declínio", "stable": "➡️ Estável"}
+                        st.caption(f"Tendência: **{trend_icons.get(trend, trend)}**")
+
+                        yearly_data = []
+                        for yr in yearly:
+                            yearly_data.append({
+                                "Ano":       yr["year"],
+                                "Posições":  yr["positions"],
+                                "Hit Rate":  f"{yr['hit_rate']:.0%}" if yr["hit_rate"] is not None else "—",
+                                "Direction": fmt_score(yr["avg_direction_score"]),
+                                "Target":    fmt_score(yr["avg_target_score"]),
+                                "Alpha":     fmt_pct(yr["avg_alpha"]),
+                                "W/L":       f"{yr['wins']}/{yr['losses']}",
+                            })
+
+                        df_yearly = pd.DataFrame(yearly_data)
+                        st.dataframe(df_yearly, use_container_width=True, hide_index=True)
+
+                        # Direction score trend chart
+                        if len(yearly) >= 2:
+                            dir_scores = [
+                                {"Ano": yr["year"], "Direction Score": yr["avg_direction_score"]}
+                                for yr in yearly if yr["avg_direction_score"] is not None
+                            ]
+                            if len(dir_scores) >= 2:
+                                df_trend = pd.DataFrame(dir_scores)
+                                fig_trend = go.Figure()
+                                fig_trend.add_trace(go.Scatter(
+                                    x=df_trend["Ano"].astype(str),
+                                    y=df_trend["Direction Score"],
+                                    mode="lines+markers",
+                                    line=dict(color="#3ecf8e", width=2),
+                                    marker=dict(size=8),
+                                    name="Direction Score",
+                                ))
+                                fig_trend.add_hline(
+                                    y=0.5, line_dash="dot", line_color="#6b7490",
+                                    annotation_text="Threshold 0.5"
+                                )
+                                fig_trend.update_layout(
+                                    title="Evolução Direction Score por Ano",
+                                    paper_bgcolor="rgba(0,0,0,0)",
+                                    plot_bgcolor="rgba(19,22,30,1)",
+                                    font_color="#e2e6f0",
+                                    yaxis=dict(range=[0, 1.1]),
+                                    height=280,
+                                )
+                                st.plotly_chart(fig_trend, use_container_width=True)
+                    else:
+                        st.info("Sem dados anuais disponíveis para este analista.")
+            except Exception as e:
+                st.warning(f"Erro ao carregar scores anuais: {e}")
+
     else:
         st.info("Sem recomendações avaliadas para este analista.")
+
+
+
+
+# ─────────────────────────────────────────────
+# PAGE: PORTFÓLIO SIMULADO
+# ─────────────────────────────────────────────
+
+elif "Portfólio" in page:
+    st.markdown("# 💼 Portfólio Simulado")
+    st.caption('"Se você tivesse seguido esse analista, quanto teria ganho?"')
+
+    df_rank_port = load_ranking(market_filter, min_recs, *year_range)
+    if df_rank_port.empty:
+        st.warning("Nenhum analista com dados suficientes.")
+        st.stop()
+
+    analyst_list_port = df_rank_port["analyst"].tolist()
+    selected_port = st.selectbox("Selecione o analista", analyst_list_port, key="port_analyst")
+
+    if not SCORING_EXTRAS_AVAILABLE:
+        st.error("Módulo scoring_engine não disponível. Verifique a instalação.")
+        st.stop()
+
+    try:
+        conn_port = get_conn()
+        analyst_row_port = conn_port.execute(
+            "SELECT id FROM analysts WHERE name = ?", (selected_port,)
+        ).fetchone()
+
+        if not analyst_row_port:
+            st.warning("Analista não encontrado no banco.")
+            st.stop()
+
+        result = simulate_portfolio(conn_port, analyst_row_port["id"])
+
+        if not result:
+            st.info(f"Sem dados suficientes para simular portfólio de {selected_port}.")
+            st.stop()
+
+        # Cumulative metrics
+        st.markdown("---")
+        st.markdown("### Resultado Acumulado")
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("Retorno Total", f"{result['cumulative_return']:+.1f}%")
+        mc2.metric("Benchmark Total", f"{result['cumulative_bench']:+.1f}%")
+        mc3.metric("Alpha Total", f"{result['cumulative_alpha']:+.1f}%")
+        mc4.metric("Total Posições", result["total_positions"])
+
+        st.markdown("---")
+
+        # Yearly breakdown table
+        st.markdown("### Retornos Anuais")
+        yearly_port_data = []
+        for yr in result["years"]:
+            best_str  = f"{yr['best_call']['ticker']} ({yr['best_call']['return_pct']:+.1f}%)" if yr["best_call"] else "—"
+            worst_str = f"{yr['worst_call']['ticker']} ({yr['worst_call']['return_pct']:+.1f}%)" if yr["worst_call"] else "—"
+            yearly_port_data.append({
+                "Ano":       yr["year"],
+                "Posições":  yr["n_positions"],
+                "Retorno":   f"{yr['return_pct']:+.1f}%",
+                "Benchmark": f"{yr['benchmark_return']:+.1f}%" if yr["benchmark_return"] is not None else "—",
+                "Alpha":     f"{yr['alpha']:+.1f}%" if yr["alpha"] is not None else "—",
+                "Melhor":    best_str,
+                "Pior":      worst_str,
+            })
+
+        df_port = pd.DataFrame(yearly_port_data)
+        st.dataframe(df_port, use_container_width=True, hide_index=True)
+
+        # Equity curve chart
+        st.markdown("---")
+        st.markdown("### Curva de Equity")
+        all_monthly = []
+        carry_equity = 100.0
+        for yr in result["years"]:
+            year_months = yr.get("monthly_equity", [])
+            if year_months:
+                scale = carry_equity / 100.0
+                for m in year_months:
+                    all_monthly.append({"month": m["month"], "equity": round(m["equity"] * scale, 2)})
+                carry_equity = all_monthly[-1]["equity"]
+
+        if all_monthly:
+            df_equity = pd.DataFrame(all_monthly)
+            fig_eq = go.Figure()
+            fig_eq.add_trace(go.Scatter(
+                x=df_equity["month"],
+                y=df_equity["equity"],
+                mode="lines",
+                line=dict(color="#4f9cf9", width=2),
+                fill="tozeroy",
+                fillcolor="rgba(79,156,249,0.15)",
+                name="Equity",
+            ))
+            fig_eq.add_hline(
+                y=100, line_dash="dot", line_color="#6b7490",
+                annotation_text="Investimento Inicial"
+            )
+            fig_eq.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(19,22,30,1)",
+                font_color="#e2e6f0",
+                xaxis_title="Mês",
+                yaxis_title="Equity",
+                height=350,
+            )
+            st.plotly_chart(fig_eq, use_container_width=True)
+        else:
+            st.info("Sem dados mensais disponíveis para a curva de equity.")
+
+        # Annual returns bar chart
+        st.markdown("---")
+        st.markdown("### Retorno vs Benchmark por Ano")
+        years_list = [yr["year"] for yr in result["years"]]
+        returns_list = [yr["return_pct"] for yr in result["years"]]
+        bench_list = [yr["benchmark_return"] if yr["benchmark_return"] is not None else 0 for yr in result["years"]]
+
+        fig_bar = go.Figure()
+        fig_bar.add_trace(go.Bar(
+            x=[str(y) for y in years_list],
+            y=returns_list,
+            name="Portfólio",
+            marker_color="#3ecf8e",
+        ))
+        fig_bar.add_trace(go.Bar(
+            x=[str(y) for y in years_list],
+            y=bench_list,
+            name="Benchmark",
+            marker_color="#6b7490",
+        ))
+        fig_bar.update_layout(
+            barmode="group",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(19,22,30,1)",
+            font_color="#e2e6f0",
+            xaxis_title="Ano",
+            yaxis_title="Retorno (%)",
+            height=300,
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+    except Exception as e:
+        st.error(f"Erro ao simular portfólio: {e}")
 
 
 # ─────────────────────────────────────────────
