@@ -1230,7 +1230,7 @@ elif "Risk" in page:
 
             # Interpretation
             if prob >= 75:
-                interp = "Strong signal — history and context favor this call."
+                interp = "✅ Strong signal — history and context favor this call."
             elif prob >= 62:
                 interp = "🟡 Moderate signal — reasonable call, monitor closely."
             elif prob >= 50:
