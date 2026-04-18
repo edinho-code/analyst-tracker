@@ -76,10 +76,29 @@ html, body, [class*="css"] {
     color: var(--text);
 }
 
-/* Header */
-h1 { font-family: 'DM Serif Display', serif; font-size: 2.2rem; color: #ffffff; letter-spacing: -0.02em; }
-h2 { font-family: 'DM Sans', sans-serif; font-weight: 600; font-size: 1.1rem; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.08em; }
-h3 { font-family: 'DM Sans', sans-serif; font-weight: 500; color: var(--text); }
+/* Header — force high contrast on all headings */
+h1, h1 span, [data-testid="stMarkdownContainer"] h1 {
+    font-family: 'DM Serif Display', serif !important;
+    font-size: 2.2rem !important;
+    color: #ffffff !important;
+    letter-spacing: -0.02em;
+    opacity: 1 !important;
+}
+h2, h2 span, [data-testid="stMarkdownContainer"] h2 {
+    font-family: 'DM Sans', sans-serif !important;
+    font-weight: 600 !important;
+    font-size: 1.1rem !important;
+    color: #e2e6f0 !important;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    opacity: 1 !important;
+}
+h3, h3 span, [data-testid="stMarkdownContainer"] h3 {
+    font-family: 'DM Sans', sans-serif !important;
+    font-weight: 500 !important;
+    color: #d4d9eb !important;
+    opacity: 1 !important;
+}
 
 /* Sidebar */
 section[data-testid="stSidebar"] {
@@ -105,9 +124,12 @@ section[data-testid="stSidebar"] .stCaption, section[data-testid="stSidebar"] sm
 }
 
 /* Caption text — more readable */
-.stCaption, [data-testid="stCaptionContainer"] {
+.stCaption, [data-testid="stCaptionContainer"],
+[data-testid="stCaptionContainer"] p,
+[data-testid="stCaptionContainer"] span {
     color: var(--text-sec) !important;
     font-size: 0.85rem !important;
+    opacity: 1 !important;
 }
 
 /* Metric cards */
@@ -187,9 +209,39 @@ span[data-baseweb="tag"] {
     color: #ffffff !important;
 }
 
-/* General paragraph & label text */
-p, span, label, .stMarkdown {
-    color: var(--text);
+/* General paragraph & label text — force high contrast */
+p, span, label, .stMarkdown, .stMarkdown p, .stMarkdown span {
+    color: var(--text) !important;
+}
+
+/* Streamlit widget labels — force visible */
+[data-testid="stWidgetLabel"] label,
+[data-testid="stWidgetLabel"] p,
+[data-testid="stWidgetLabel"] span,
+div[data-testid="stMultiSelect"] label,
+div[data-testid="stSelectbox"] label {
+    color: var(--text) !important;
+    opacity: 1 !important;
+}
+
+/* Main container background — force dark */
+[data-testid="stAppViewContainer"],
+[data-testid="stAppViewContainer"] > div,
+.main .block-container {
+    background-color: var(--bg) !important;
+    color: var(--text) !important;
+}
+
+/* Streamlit header container — force visible */
+[data-testid="stHeader"] {
+    background-color: var(--bg) !important;
+}
+
+/* Metric label text — more visible */
+div[data-testid="metric-container"] label p,
+div[data-testid="metric-container"] label span {
+    color: var(--muted) !important;
+    opacity: 1 !important;
 }
 
 /* Info / warning / error boxes */
