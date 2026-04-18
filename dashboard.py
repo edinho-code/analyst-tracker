@@ -343,9 +343,9 @@ with st.sidebar:
 
     year_range = st.slider(
         "Period",
-        min_value=2022,
+        min_value=2019,
         max_value=date.today().year,
-        value=(2022, date.today().year)
+        value=(2019, date.today().year)
     )
 
     min_recs = st.number_input("Minimum positions", min_value=1, value=1, step=1)
