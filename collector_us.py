@@ -100,10 +100,15 @@ RATING_MAP = {
     "market perform": "hold",
     "sector perform": "hold",
     "equal weight":  "hold",
+    "equal-weight":  "hold",
     "peer perform":  "hold",
     "in-line":       "hold",
     "inline":        "hold",
     "mixed":         "hold",
+    "sector weight": "hold",
+    "perform":       "hold",
+    "market weight": "hold",
+    "fair value":    "hold",
     "sell":          "sell",
     "strong sell":   "sell",
     "underperform":  "sell",
@@ -135,6 +140,10 @@ def normalize_direction(rating_text: str) -> str | None:
     clean = rating_text.lower().strip()
     if clean in RATING_MAP:
         return RATING_MAP[clean]
+    # Try with hyphens replaced by spaces (handles yfinance grades like "Equal-Weight")
+    dehyphenated = clean.replace("-", " ")
+    if dehyphenated in RATING_MAP:
+        return RATING_MAP[dehyphenated]
     for key, val in RATING_MAP.items():
         if key in clean:
             return val
