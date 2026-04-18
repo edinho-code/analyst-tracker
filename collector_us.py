@@ -144,10 +144,14 @@ def normalize_direction(rating_text: str) -> str | None:
     dehyphenated = clean.replace("-", " ")
     if dehyphenated in RATING_MAP:
         return RATING_MAP[dehyphenated]
+    # Substring fallback: prefer longest matching key to avoid short keys
+    # like "perform" shadowing "underperform" or "outperform"
+    best_key, best_val = None, None
     for key, val in RATING_MAP.items():
         if key in clean:
-            return val
-    return None
+            if best_key is None or len(key) > len(best_key):
+                best_key, best_val = key, val
+    return best_val
 
 
 def parse_price_target(text: str) -> float | None:
