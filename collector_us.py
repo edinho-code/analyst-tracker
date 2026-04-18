@@ -1,27 +1,31 @@
 """
 Analyst Tracker — Collector US
 ================================
-Collects historical ratings and price targets from US analysts
-via StockAnalysis.com (/stocks/{ticker}/ratings/).
+Collects historical ratings and price targets from US analysts.
+
+Data sources (in priority order):
+  1. Yahoo Finance (yfinance) — full historical upgrades/downgrades with
+     firm, grade, action, and price targets going back to ~2012.
+  2. StockAnalysis.com (fallback) — scrapes /stocks/{ticker}/ratings/
+     but is limited to ~16 most recent ratings per ticker.
 
 Flow v2 (position model):
-  1. Downloads the ratings page for each ticker
-  2. Parses the HTML table (analyst, firm, rating, price target, date)
-  3. Normalizes direction (Strong Buy/Buy → buy, Hold → hold, Sell → sell)
-  4. Processes ratings from oldest to newest:
+  1. Fetches ratings for each ticker (Yahoo Finance primary, SA fallback)
+  2. Normalizes direction (Strong Buy/Buy → buy, Hold → hold, Sell → sell)
+  3. Processes ratings from oldest to newest:
      - No open position → opens new position
      - Same direction → revision (target_up, target_down or reiterate)
      - Different direction → closes current position + opens new
-  5. Creates analysts/sources automatically if they don't exist
+  4. Creates analysts/sources automatically if they don't exist
 
 Usage:
     python collector_us.py                        # all tickers
     python collector_us.py --ticker NVDA          # specific ticker
-    python collector_us.py --since 2022-01-01     # filter by date
+    python collector_us.py --since 2019-01-01     # filter by date
     python collector_us.py --stats                # summary of collected data
 
 Dependencies:
-    pip install requests beautifulsoup4
+    pip install requests beautifulsoup4 yfinance
 """
 
 from __future__ import annotations
@@ -40,10 +44,16 @@ except ImportError:
     print("❌ Run: pip install requests beautifulsoup4")
     sys.exit(1)
 
+try:
+    import yfinance as yf
+    HAS_YFINANCE = True
+except ImportError:
+    HAS_YFINANCE = False
+
 DB_PATH       = "analyst_tracker.db"
 BASE_URL      = "https://stockanalysis.com/stocks/{ticker}/ratings/"
-SLEEP_BETWEEN = 2.5   # seconds between requests — respect the site
-DEFAULT_SINCE = "2022-01-01"
+SLEEP_BETWEEN = 1.0   # seconds between requests
+DEFAULT_SINCE = "2019-01-01"
 
 US_TICKERS = [
     # Big Tech / Semis
@@ -158,7 +168,58 @@ def parse_date(text: str) -> str | None:
 
 
 # ─────────────────────────────────────────────
-# SCRAPER
+# YAHOO FINANCE DATA SOURCE (primary)
+# ─────────────────────────────────────────────
+
+def fetch_ratings_yfinance(ticker: str, since: str = DEFAULT_SINCE) -> list[dict]:
+    """Fetches full historical ratings from Yahoo Finance upgrades_downgrades.
+    Returns list of rating dicts ready for save_ratings()."""
+    if not HAS_YFINANCE:
+        return []
+
+    try:
+        tk = yf.Ticker(ticker)
+        ud = tk.upgrades_downgrades
+    except Exception as e:
+        print(f"yfinance error: {e}")
+        return []
+
+    if ud is None or ud.empty:
+        return []
+
+    results = []
+    for grade_date, row in ud.iterrows():
+        rec_date = grade_date.strftime("%Y-%m-%d")
+        if rec_date < since:
+            continue
+
+        raw_rating = row.get("ToGrade", "")
+        direction  = normalize_direction(raw_rating)
+        if not direction:
+            continue
+
+        firm_name    = row.get("Firm", "Unknown")
+        analyst_name = "Research Team"  # yfinance doesn't provide analyst names
+
+        pt_now = row.get("currentPriceTarget", None)
+        price_target = float(pt_now) if pt_now and pt_now > 0 else None
+
+        results.append({
+            "ticker":       ticker.upper(),
+            "analyst_name": analyst_name,
+            "firm_name":    firm_name or "Unknown",
+            "direction":    direction,
+            "price_target": price_target,
+            "rec_date":     rec_date,
+            "raw_rating":   raw_rating,
+            "source_url":   f"https://finance.yahoo.com/quote/{ticker.upper()}/",
+        })
+
+    return results
+
+
+# ─────────────────────────────────────────────
+# STOCKANALYSIS.COM SCRAPER (fallback)
 # ─────────────────────────────────────────────
 
 def fetch_ratings_page(ticker: str) -> str | None:
@@ -577,27 +638,32 @@ def run_collector(ticker: str, since: str = DEFAULT_SINCE):
 
     print(f"  📥 {ticker:<6} ", end="", flush=True)
 
-    html = fetch_ratings_page(ticker)
-    if not html:
-        conn.close()
-        return 0, 0
+    # Primary: Yahoo Finance (full history)
+    ratings = fetch_ratings_yfinance(ticker, since=since)
+    source = "yf"
 
-    ratings = parse_ratings_table(html, ticker, since=since)
+    # Fallback: StockAnalysis.com (limited to ~16 recent ratings)
+    if not ratings:
+        html = fetch_ratings_page(ticker)
+        if html:
+            ratings = parse_ratings_table(html, ticker, since=since)
+            source = "sa"
 
     if not ratings:
-        print(f"0 ratings found (JS table or no data since {since})")
+        print(f"0 ratings found (no data since {since})")
         conn.close()
         return 0, 0
 
     inserted, duplicates = save_ratings(conn, ratings)
-    print(f"{len(ratings):>4} ratings parsed → {inserted:>4} inserted/revised, {duplicates:>4} duplicates")
+    print(f"{len(ratings):>4} ratings [{source}] → {inserted:>4} inserted/revised, {duplicates:>4} duplicates")
 
     conn.close()
     return inserted, duplicates
 
 
 def run_all(since: str = DEFAULT_SINCE):
-    print(f"\n🚀 Collector US v2 — {len(US_TICKERS)} tickers | since {since}\n")
+    src_label = "Yahoo Finance" if HAS_YFINANCE else "StockAnalysis.com"
+    print(f"\n🚀 Collector US v2 — {len(US_TICKERS)} tickers | since {since} | source: {src_label}\n")
 
     total_inserted   = 0
     total_duplicates = 0
