@@ -1,13 +1,13 @@
 """
 Analyst Tracker — Dashboard
 =============================
-Interface visual completa para explorar rankings, performance
-e histórico de recomendações de analistas BR e US.
+Complete visual interface for exploring rankings, performance
+and recommendation history of BR and US analysts.
 
-Uso:
+Usage:
     streamlit run dashboard.py
 
-Dependências:
+Dependencies:
     pip install streamlit plotly pandas
 """
 
@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 
 DB_PATH = "analyst_tracker.db"
 
-# Importar risk_engine e scoring_engine se disponíveis
+# Import risk_engine and scoring_engine if available
 try:
     sys.path.insert(0, str(Path(__file__).parent))
     from risk_engine import evaluate_call as _evaluate_call
@@ -40,7 +40,7 @@ except ImportError:
     SCORING_EXTRAS_AVAILABLE = False
 
 # ─────────────────────────────────────────────
-# CONFIG DA PÁGINA
+# PAGE CONFIG
 # ─────────────────────────────────────────────
 
 st.set_page_config(
@@ -50,7 +50,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# CSS customizado — tema escuro refinado, tipografia editorial
+# Custom CSS — refined dark theme, editorial typography
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap');
@@ -59,10 +59,11 @@ st.markdown("""
     --bg:        #0d0f14;
     --bg2:       #13161e;
     --bg3:       #1a1e2a;
-    --border:    #252a38;
-    --text:      #e2e6f0;
-    --muted:     #6b7490;
-    --accent:    #4f9cf9;
+    --border:    #2d3348;
+    --text:      #eef0f6;
+    --text-sec:  #c0c6d8;
+    --muted:     #8d95b0;
+    --accent:    #5ba8ff;
     --green:     #3ecf8e;
     --red:       #f96060;
     --amber:     #f9c74f;
@@ -76,14 +77,37 @@ html, body, [class*="css"] {
 }
 
 /* Header */
-h1 { font-family: 'DM Serif Display', serif; font-size: 2.2rem; color: var(--text); letter-spacing: -0.02em; }
-h2 { font-family: 'DM Sans', sans-serif; font-weight: 600; font-size: 1.1rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+h1 { font-family: 'DM Serif Display', serif; font-size: 2.2rem; color: #ffffff; letter-spacing: -0.02em; }
+h2 { font-family: 'DM Sans', sans-serif; font-weight: 600; font-size: 1.1rem; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.08em; }
 h3 { font-family: 'DM Sans', sans-serif; font-weight: 500; color: var(--text); }
 
 /* Sidebar */
 section[data-testid="stSidebar"] {
     background-color: var(--bg2);
     border-right: 1px solid var(--border);
+}
+
+/* Sidebar radio labels — high contrast */
+section[data-testid="stSidebar"] label,
+section[data-testid="stSidebar"] .stRadio label,
+section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
+section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] span {
+    color: var(--text) !important;
+    font-size: 0.95rem !important;
+}
+section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label p {
+    color: var(--text) !important;
+    font-size: 1rem !important;
+    font-weight: 400 !important;
+}
+section[data-testid="stSidebar"] .stCaption, section[data-testid="stSidebar"] small {
+    color: var(--muted) !important;
+}
+
+/* Caption text — more readable */
+.stCaption, [data-testid="stCaptionContainer"] {
+    color: var(--text-sec) !important;
+    font-size: 0.85rem !important;
 }
 
 /* Metric cards */
@@ -95,7 +119,7 @@ div[data-testid="metric-container"] {
 }
 div[data-testid="metric-container"] label {
     color: var(--muted) !important;
-    font-size: 0.72rem !important;
+    font-size: 0.78rem !important;
     text-transform: uppercase;
     letter-spacing: 0.1em;
     font-family: 'DM Mono', monospace !important;
@@ -103,14 +127,75 @@ div[data-testid="metric-container"] label {
 div[data-testid="metric-container"] div[data-testid="stMetricValue"] {
     font-family: 'DM Mono', monospace;
     font-size: 1.6rem;
+    color: #ffffff;
+}
+
+/* Dataframe — dark themed */
+div[data-testid="stDataFrame"] {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+}
+div[data-testid="stDataFrame"] table { color: var(--text) !important; }
+div[data-testid="stDataFrame"] th {
+    background-color: var(--bg3) !important;
+    color: var(--text-sec) !important;
+    border-bottom: 1px solid var(--border) !important;
+}
+div[data-testid="stDataFrame"] td {
+    color: var(--text) !important;
+    border-bottom: 1px solid rgba(45, 51, 72, 0.5) !important;
+}
+/* Glide data grid (Streamlit's default table renderer) */
+div[data-testid="stDataFrame"] canvas + div {
+    color: var(--text) !important;
+}
+
+/* Selectbox / inputs — readable text */
+div[data-baseweb="select"] > div {
+    background: var(--bg3) !important;
+    border-color: var(--border) !important;
+}
+div[data-baseweb="select"] span,
+div[data-baseweb="select"] div[class*="ValueContainer"] {
+    color: var(--text) !important;
+}
+div[data-baseweb="input"] input,
+div[data-baseweb="select"] input {
+    color: var(--text) !important;
+}
+/* Dropdown menu */
+ul[role="listbox"] {
+    background-color: var(--bg3) !important;
+}
+ul[role="listbox"] li {
+    color: var(--text) !important;
+}
+ul[role="listbox"] li:hover {
+    background-color: var(--bg2) !important;
+}
+
+/* Number input */
+div[data-testid="stNumberInput"] input {
+    color: var(--text) !important;
+    background-color: var(--bg3) !important;
+}
+
+/* Multiselect pills */
+span[data-baseweb="tag"] {
+    background-color: var(--accent) !important;
+    color: #ffffff !important;
+}
+
+/* General paragraph & label text */
+p, span, label, .stMarkdown {
     color: var(--text);
 }
 
-/* Dataframe */
-div[data-testid="stDataFrame"] { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-
-/* Selectbox / inputs */
-div[data-baseweb="select"] > div { background: var(--bg3) !important; border-color: var(--border) !important; }
+/* Info / warning / error boxes */
+div[data-testid="stAlert"] {
+    color: var(--text) !important;
+}
 
 /* Divider */
 hr { border-color: var(--border); margin: 1.5rem 0; }
@@ -120,18 +205,25 @@ hr { border-color: var(--border); margin: 1.5rem 0; }
 .badge-sell   { background: rgba(249,96,96,0.15);  color: #f96060; padding: 2px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: 600; font-family: 'DM Mono', monospace; }
 .badge-hold   { background: rgba(249,199,79,0.15); color: #f9c74f; padding: 2px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: 600; font-family: 'DM Mono', monospace; }
 .score-pill   { font-family: 'DM Mono', monospace; font-size: 0.85rem; }
+
+/* Slider text */
+div[data-testid="stSlider"] label,
+div[data-testid="stSlider"] div[data-testid="stTickBarMin"],
+div[data-testid="stSlider"] div[data-testid="stTickBarMax"] {
+    color: var(--text-sec) !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
 
 # ─────────────────────────────────────────────
-# CONEXÃO
+# CONNECTION
 # ─────────────────────────────────────────────
 
 @st.cache_resource
 def get_conn():
     if not Path(DB_PATH).exists():
-        st.error(f"Banco '{DB_PATH}' não encontrado. Rode analyst_tracker_setup.py primeiro.")
+        st.error(f"Database '{DB_PATH}' not found. Run analyst_tracker_setup.py first.")
         st.stop()
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -175,7 +267,7 @@ def color_direction(d: str) -> str:
 
 
 # ─────────────────────────────────────────────
-# SIDEBAR — FILTROS GLOBAIS
+# SIDEBAR — GLOBAL FILTERS
 # ─────────────────────────────────────────────
 
 with st.sidebar:
@@ -183,39 +275,39 @@ with st.sidebar:
     st.markdown("---")
 
     page = st.radio(
-        "Navegação",
-        ["🏆 Ranking", "🔍 Analista", "📈 Ativo", "📰 Recomendações", "💼 Portfólio", "🎯 Risk Assessment", "📋 Clipping BR"],
+        "Navigation",
+        ["🏆 Ranking", "🔍 Analyst", "📈 Asset", "📰 Recommendations", "💼 Portfolio", "🎯 Risk Assessment", "📋 Clipping BR"],
         label_visibility="collapsed"
     )
 
     st.markdown("---")
-    st.markdown("**Filtros**")
+    st.markdown("**Filters**")
 
     market_filter = st.multiselect(
-        "Mercado",
+        "Market",
         ["BR", "US"],
         default=["BR", "US"]
     )
 
     year_range = st.slider(
-        "Período",
+        "Period",
         min_value=2022,
         max_value=date.today().year,
         value=(2022, date.today().year)
     )
 
-    min_recs = st.number_input("Mínimo de posições", min_value=1, value=1, step=1)
+    min_recs = st.number_input("Minimum positions", min_value=1, value=1, step=1)
 
     st.markdown("---")
-    st.caption(f"Banco: `{DB_PATH}`")
+    st.caption(f"Database: `{DB_PATH}`")
 
-    if st.button("🔄 Limpar cache"):
+    if st.button("🔄 Clear cache"):
         st.cache_data.clear()
         st.rerun()
 
 
 # ─────────────────────────────────────────────
-# DADOS BASE
+# BASE DATA
 # ─────────────────────────────────────────────
 
 @st.cache_data(ttl=300)
@@ -294,25 +386,25 @@ def load_recommendations(markets: list, year_start: int, year_end: int) -> pd.Da
 # ─────────────────────────────────────────────
 
 if "Ranking" in page:
-    st.markdown("# 🏆 Ranking de Analistas")
-    st.caption(f"Score composto: Direction×40% + Target×25% + Alpha×25% + Consistency×10%")
+    st.markdown("# 🏆 Analyst Ranking")
+    st.caption(f"Composite score: Direction×40% + Target×25% + Alpha×25% + Consistency×10%")
 
     df = load_ranking(market_filter, min_recs, *year_range)
 
     if df.empty:
-        st.warning("Nenhum dado encontrado. Rode o scoring_engine.py primeiro.")
+        st.warning("No data found. Run scoring_engine.py first.")
         st.stop()
 
-    # KPIs topo
+    # Top KPIs
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Analistas rankeados",   len(df))
-    c2.metric("Melhor direction score", fmt_score(df["avg_direction_score"].max()))
-    c3.metric("Melhor alpha médio",     fmt_pct(df["avg_alpha"].max()))
-    c4.metric("Maior consistência",     fmt_score(df["consistency"].max()))
+    c1.metric("Ranked analysts",        len(df))
+    c2.metric("Best direction score",   fmt_score(df["avg_direction_score"].max()))
+    c3.metric("Best avg alpha",         fmt_pct(df["avg_alpha"].max()))
+    c4.metric("Highest consistency",    fmt_score(df["consistency"].max()))
 
     st.markdown("---")
 
-    # Tabela de ranking
+    # Ranking table
     display = df[[
         "analyst", "firm", "country",
         "avg_direction_score", "avg_target_score",
@@ -321,13 +413,13 @@ if "Ranking" in page:
     ]].copy()
 
     display.columns = [
-        "Analista", "Firma", "País",
+        "Analyst", "Firm", "Country",
         "Dir Score", "Tgt Score",
         "Alpha %", "Consistency",
-        "Posições", "Score"
+        "Positions", "Score"
     ]
 
-    display["País"] = display["País"].map({"BR": "🇧🇷", "US": "🇺🇸"}).fillna("🌐")
+    display["Country"] = display["Country"].map({"BR": "🇧🇷", "US": "🇺🇸"}).fillna("🌐")
     display["Dir Score"]   = display["Dir Score"].apply(lambda x: fmt_score(x))
     display["Tgt Score"]   = display["Tgt Score"].apply(lambda x: fmt_score(x))
     display["Alpha %"]     = display["Alpha %"].apply(fmt_pct)
@@ -338,7 +430,7 @@ if "Ranking" in page:
 
     st.markdown("---")
 
-    # Gráfico: scatter direction score vs alpha
+    # Chart: scatter direction score vs alpha
     col1, col2 = st.columns(2)
 
     with col1:
@@ -354,8 +446,8 @@ if "Ranking" in page:
             color_discrete_map={"BR": "#3ecf8e", "US": "#4f9cf9"},
             labels={
                 "avg_direction_score": "Direction Score",
-                "avg_alpha": "Alpha médio (%)",
-                "total_positions": "Posições",
+                "avg_alpha": "Avg Alpha (%)",
+                "total_positions": "Positions",
             },
         )
         fig.update_layout(
@@ -369,14 +461,14 @@ if "Ranking" in page:
         st.plotly_chart(fig, use_container_width=True)
 
     with col2:
-        st.markdown("### Distribuição de Scores")
+        st.markdown("### Score Distribution")
         fig2 = px.histogram(
             df.dropna(subset=["composite"]),
             x="composite",
             nbins=20,
             color="country",
             color_discrete_map={"BR": "#3ecf8e", "US": "#4f9cf9"},
-            labels={"composite": "Score Composto", "count": "Analistas"},
+            labels={"composite": "Composite Score", "count": "Analysts"},
             barmode="overlay",
             opacity=0.75,
         )
@@ -389,40 +481,40 @@ if "Ranking" in page:
 
 
 # ─────────────────────────────────────────────
-# PAGE: ANALISTA
+# PAGE: ANALYST
 # ─────────────────────────────────────────────
 
-elif "Analista" in page:
-    st.markdown("# 🔍 Perfil do Analista")
+elif "Analyst" in page:
+    st.markdown("# 🔍 Analyst Profile")
 
     df_rank = load_ranking(market_filter, min_recs, *year_range)
     if df_rank.empty:
-        st.warning("Nenhum analista com dados suficientes.")
+        st.warning("No analysts with sufficient data.")
         st.stop()
 
     analyst_list = df_rank["analyst"].tolist()
-    selected = st.selectbox("Selecione o analista", analyst_list)
+    selected = st.selectbox("Select analyst", analyst_list)
 
     row = df_rank[df_rank["analyst"] == selected].iloc[0]
 
-    # Header do analista
+    # Analyst header
     flag = "🇧🇷" if row["country"] == "BR" else "🇺🇸"
     st.markdown(f"## {flag} {selected}")
-    st.caption(f"{row['firm']} · Score composto: **{row['composite']:.1f}**")
+    st.caption(f"{row['firm']} · Composite score: **{row['composite']:.1f}**")
 
     st.markdown("---")
 
-    # Métricas
+    # Metrics
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Direction Score",  fmt_score(row["avg_direction_score"]))
     c2.metric("Target Score",     fmt_score(row["avg_target_score"]))
-    c3.metric("Alpha médio",      fmt_pct(row["avg_alpha"]))
+    c3.metric("Avg Alpha",        fmt_pct(row["avg_alpha"]))
     c4.metric("Consistency",      fmt_score(row["consistency"]))
-    c5.metric("Posições",         int(row["total_positions"]))
+    c5.metric("Positions",        int(row["total_positions"]))
 
     st.markdown("---")
 
-    # Posições do analista
+    # Analyst positions
     df_recs = query("""
         SELECT
             pos.open_date AS rec_date, pos.direction,
@@ -443,43 +535,43 @@ elif "Analista" in page:
         col1, col2 = st.columns([2, 1])
 
         with col1:
-            st.markdown("### Histórico de Recomendações")
+            st.markdown("### Recommendation History")
 
-            # Formatar para exibição
+            # Format for display
             disp = df_recs[[
                 "rec_date", "ticker", "direction",
                 "price_at_rec", "price_target",
                 "return_pct", "direction_score", "alpha"
             ]].copy()
-            disp.columns = ["Data", "Ticker", "Direção", "Preço entrada", "Target", "Retorno %", "Dir Score", "Alpha %"]
-            disp["Direção"]  = disp["Direção"].map({"buy": "🟢 BUY", "sell": "🔴 SELL", "hold": "🟡 HOLD"})
-            disp["Retorno %"] = disp["Retorno %"].apply(fmt_pct)
+            disp.columns = ["Date", "Ticker", "Direction", "Entry Price", "Target", "Return %", "Dir Score", "Alpha %"]
+            disp["Direction"]  = disp["Direction"].map({"buy": "🟢 BUY", "sell": "🔴 SELL", "hold": "🟡 HOLD"})
+            disp["Return %"] = disp["Return %"].apply(fmt_pct)
             disp["Alpha %"]   = disp["Alpha %"].apply(fmt_pct)
             disp["Dir Score"] = disp["Dir Score"].apply(fmt_score)
 
             st.dataframe(disp, use_container_width=True, height=350)
 
         with col2:
-            st.markdown("### Por ticker")
+            st.markdown("### By Ticker")
             ticker_stats = df_recs.groupby("ticker").agg(
                 recs=("direction_score", "count"),
                 avg_dir=("direction_score", "mean"),
                 avg_ret=("return_pct", "mean"),
             ).round(3).reset_index()
             ticker_stats = ticker_stats.sort_values("avg_dir", ascending=False)
-            ticker_stats.columns = ["Ticker", "Recs", "Dir Score", "Ret% médio"]
+            ticker_stats.columns = ["Ticker", "Recs", "Dir Score", "Avg Ret%"]
             ticker_stats["Dir Score"] = ticker_stats["Dir Score"].apply(fmt_score)
-            ticker_stats["Ret% médio"] = ticker_stats["Ret% médio"].apply(fmt_pct)
+            ticker_stats["Avg Ret%"] = ticker_stats["Avg Ret%"].apply(fmt_pct)
             st.dataframe(ticker_stats, use_container_width=True, hide_index=True)
 
-        # Evolução do direction score ao longo do tempo
-        st.markdown("### Evolução de performance")
+        # Direction score evolution over time
+        st.markdown("### Performance Evolution")
         df_time = df_recs.dropna(subset=["direction_score"]).copy()
         df_time["rec_date"] = pd.to_datetime(df_time["rec_date"])
         df_time = df_time.sort_values("rec_date")
 
         if len(df_time) >= 3:
-            # Rolling average (janela 5)
+            # Rolling average (window 5)
             df_time["rolling_dir"] = df_time["direction_score"].rolling(5, min_periods=1).mean()
 
             fig = go.Figure()
@@ -495,7 +587,7 @@ elif "Analista" in page:
                 y=df_time["rolling_dir"],
                 mode="lines",
                 line=dict(color="#3ecf8e", width=2),
-                name="Média móvel (5)",
+                name="Moving Avg (5)",
             ))
             fig.add_hline(y=0.5, line_dash="dot", line_color="#6b7490", line_width=1,
                           annotation_text="Threshold 0.5")
@@ -512,7 +604,7 @@ elif "Analista" in page:
         # ── Yearly Score Breakdown ──
         if SCORING_EXTRAS_AVAILABLE:
             st.markdown("---")
-            st.markdown("### 📊 Scores Anuais")
+            st.markdown("### 📊 Yearly Scores")
             try:
                 conn_yearly = get_conn()
                 analyst_row = conn_yearly.execute(
@@ -523,14 +615,14 @@ elif "Analista" in page:
                     yearly = compute_yearly_scores(conn_yearly, analyst_row["id"])
                     if yearly:
                         trend = yearly[0].get("trend", "stable")
-                        trend_icons = {"ascending": "📈 Em ascensão", "declining": "📉 Em declínio", "stable": "➡️ Estável"}
-                        st.caption(f"Tendência: **{trend_icons.get(trend, trend)}**")
+                        trend_icons = {"ascending": "📈 Ascending", "declining": "📉 Declining", "stable": "➡️ Stable"}
+                        st.caption(f"Trend: **{trend_icons.get(trend, trend)}**")
 
                         yearly_data = []
                         for yr in yearly:
                             yearly_data.append({
-                                "Ano":       yr["year"],
-                                "Posições":  yr["positions"],
+                                    "Year":      yr["year"],
+                                    "Positions": yr["positions"],
                                 "Hit Rate":  f"{yr['hit_rate']:.0%}" if yr["hit_rate"] is not None else "—",
                                 "Direction": fmt_score(yr["avg_direction_score"]),
                                 "Target":    fmt_score(yr["avg_target_score"]),
@@ -544,14 +636,14 @@ elif "Analista" in page:
                         # Direction score trend chart
                         if len(yearly) >= 2:
                             dir_scores = [
-                                {"Ano": yr["year"], "Direction Score": yr["avg_direction_score"]}
+                                {"Year": yr["year"], "Direction Score": yr["avg_direction_score"]}
                                 for yr in yearly if yr["avg_direction_score"] is not None
                             ]
                             if len(dir_scores) >= 2:
                                 df_trend = pd.DataFrame(dir_scores)
                                 fig_trend = go.Figure()
                                 fig_trend.add_trace(go.Scatter(
-                                    x=df_trend["Ano"].astype(str),
+                                    x=df_trend["Year"].astype(str),
                                     y=df_trend["Direction Score"],
                                     mode="lines+markers",
                                     line=dict(color="#3ecf8e", width=2),
@@ -563,7 +655,7 @@ elif "Analista" in page:
                                     annotation_text="Threshold 0.5"
                                 )
                                 fig_trend.update_layout(
-                                    title="Evolução Direction Score por Ano",
+                                    title="Direction Score by Year",
                                     paper_bgcolor="rgba(0,0,0,0)",
                                     plot_bgcolor="rgba(19,22,30,1)",
                                     font_color="#e2e6f0",
@@ -572,34 +664,34 @@ elif "Analista" in page:
                                 )
                                 st.plotly_chart(fig_trend, use_container_width=True)
                     else:
-                        st.info("Sem dados anuais disponíveis para este analista.")
+                        st.info("No yearly data available for this analyst.")
             except Exception as e:
-                st.warning(f"Erro ao carregar scores anuais: {e}")
+                st.warning(f"Error loading yearly scores: {e}")
 
     else:
-        st.info("Sem recomendações avaliadas para este analista.")
+        st.info("No evaluated recommendations for this analyst.")
 
 
 
 
 # ─────────────────────────────────────────────
-# PAGE: PORTFÓLIO SIMULADO
+# PAGE: SIMULATED PORTFOLIO
 # ─────────────────────────────────────────────
 
-elif "Portfólio" in page:
-    st.markdown("# 💼 Portfólio Simulado")
-    st.caption('"Se você tivesse seguido esse analista, quanto teria ganho?"')
+elif "Portfolio" in page:
+    st.markdown("# 💼 Simulated Portfolio")
+    st.caption('"If you had followed this analyst, how much would you have made?"')
 
     df_rank_port = load_ranking(market_filter, min_recs, *year_range)
     if df_rank_port.empty:
-        st.warning("Nenhum analista com dados suficientes.")
+        st.warning("No analysts with sufficient data.")
         st.stop()
 
     analyst_list_port = df_rank_port["analyst"].tolist()
-    selected_port = st.selectbox("Selecione o analista", analyst_list_port, key="port_analyst")
+    selected_port = st.selectbox("Select analyst", analyst_list_port, key="port_analyst")
 
     if not SCORING_EXTRAS_AVAILABLE:
-        st.error("Módulo scoring_engine não disponível. Verifique a instalação.")
+        st.error("scoring_engine module not available. Check installation.")
         st.stop()
 
     try:
@@ -609,40 +701,40 @@ elif "Portfólio" in page:
         ).fetchone()
 
         if not analyst_row_port:
-            st.warning("Analista não encontrado no banco.")
+            st.warning("Analyst not found in database.")
             st.stop()
 
         result = simulate_portfolio(conn_port, analyst_row_port["id"])
 
         if not result:
-            st.info(f"Sem dados suficientes para simular portfólio de {selected_port}.")
+            st.info(f"Not enough data to simulate portfolio for {selected_port}.")
             st.stop()
 
         # Cumulative metrics
         st.markdown("---")
-        st.markdown("### Resultado Acumulado")
+        st.markdown("### Cumulative Result")
         mc1, mc2, mc3, mc4 = st.columns(4)
-        mc1.metric("Retorno Total", f"{result['cumulative_return']:+.1f}%")
-        mc2.metric("Benchmark Total", f"{result['cumulative_bench']:+.1f}%")
-        mc3.metric("Alpha Total", f"{result['cumulative_alpha']:+.1f}%")
-        mc4.metric("Total Posições", result["total_positions"])
+        mc1.metric("Total Return", f"{result['cumulative_return']:+.1f}%")
+        mc2.metric("Benchmark Total", f"{result['cumulative_bench']:+.1f}%" if result['cumulative_bench'] is not None else "—")
+        mc3.metric("Total Alpha", f"{result['cumulative_alpha']:+.1f}%" if result['cumulative_alpha'] is not None else "—")
+        mc4.metric("Total Positions", result["total_positions"])
 
         st.markdown("---")
 
         # Yearly breakdown table
-        st.markdown("### Retornos Anuais")
+        st.markdown("### Annual Returns")
         yearly_port_data = []
         for yr in result["years"]:
             best_str  = f"{yr['best_call']['ticker']} ({yr['best_call']['return_pct']:+.1f}%)" if yr["best_call"] else "—"
             worst_str = f"{yr['worst_call']['ticker']} ({yr['worst_call']['return_pct']:+.1f}%)" if yr["worst_call"] else "—"
             yearly_port_data.append({
-                "Ano":       yr["year"],
-                "Posições":  yr["n_positions"],
-                "Retorno":   f"{yr['return_pct']:+.1f}%",
+                "Year":      yr["year"],
+                "Positions": yr["n_positions"],
+                "Return":    f"{yr['return_pct']:+.1f}%",
                 "Benchmark": f"{yr['benchmark_return']:+.1f}%" if yr["benchmark_return"] is not None else "—",
                 "Alpha":     f"{yr['alpha']:+.1f}%" if yr["alpha"] is not None else "—",
-                "Melhor":    best_str,
-                "Pior":      worst_str,
+                "Best":      best_str,
+                "Worst":     worst_str,
             })
 
         df_port = pd.DataFrame(yearly_port_data)
@@ -650,7 +742,7 @@ elif "Portfólio" in page:
 
         # Equity curve chart
         st.markdown("---")
-        st.markdown("### Curva de Equity")
+        st.markdown("### Equity Curve")
         all_monthly = []
         carry_equity = 100.0
         for yr in result["years"]:
@@ -675,23 +767,23 @@ elif "Portfólio" in page:
             ))
             fig_eq.add_hline(
                 y=100, line_dash="dot", line_color="#6b7490",
-                annotation_text="Investimento Inicial"
+                annotation_text="Initial Investment"
             )
             fig_eq.update_layout(
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(19,22,30,1)",
                 font_color="#e2e6f0",
-                xaxis_title="Mês",
+                xaxis_title="Month",
                 yaxis_title="Equity",
                 height=350,
             )
             st.plotly_chart(fig_eq, use_container_width=True)
         else:
-            st.info("Sem dados mensais disponíveis para a curva de equity.")
+            st.info("No monthly data available for equity curve.")
 
         # Annual returns bar chart
         st.markdown("---")
-        st.markdown("### Retorno vs Benchmark por Ano")
+        st.markdown("### Return vs Benchmark by Year")
         years_list = [yr["year"] for yr in result["years"]]
         returns_list = [yr["return_pct"] for yr in result["years"]]
         bench_list = [yr["benchmark_return"] if yr["benchmark_return"] is not None else 0 for yr in result["years"]]
@@ -700,7 +792,7 @@ elif "Portfólio" in page:
         fig_bar.add_trace(go.Bar(
             x=[str(y) for y in years_list],
             y=returns_list,
-            name="Portfólio",
+            name="Portfolio",
             marker_color="#3ecf8e",
         ))
         fig_bar.add_trace(go.Bar(
@@ -714,22 +806,22 @@ elif "Portfólio" in page:
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(19,22,30,1)",
             font_color="#e2e6f0",
-            xaxis_title="Ano",
-            yaxis_title="Retorno (%)",
+            xaxis_title="Year",
+            yaxis_title="Return (%)",
             height=300,
         )
         st.plotly_chart(fig_bar, use_container_width=True)
 
     except Exception as e:
-        st.error(f"Erro ao simular portfólio: {e}")
+        st.error(f"Error simulating portfolio: {e}")
 
 
 # ─────────────────────────────────────────────
-# PAGE: ATIVO
+# PAGE: ASSET
 # ─────────────────────────────────────────────
 
-elif "Ativo" in page:
-    st.markdown("# 📈 Análise por Ativo")
+elif "Asset" in page:
+    st.markdown("# 📈 Asset Analysis")
 
     tickers = query("""
         SELECT DISTINCT ast.ticker, ast.name, ast.country
@@ -740,18 +832,18 @@ elif "Ativo" in page:
     """)
 
     if tickers.empty:
-        st.warning("Nenhum ativo com recomendações no banco.")
+        st.warning("No assets with recommendations in database.")
         st.stop()
 
     ticker_opts = tickers["ticker"].tolist()
-    sel_ticker  = st.selectbox("Selecione o ativo", ticker_opts)
+    sel_ticker  = st.selectbox("Select asset", ticker_opts)
 
     asset_info = tickers[tickers["ticker"] == sel_ticker].iloc[0]
     flag = "🇧🇷" if asset_info["country"] == "BR" else "🇺🇸"
     st.markdown(f"## {flag} {sel_ticker} — {asset_info['name']}")
     st.markdown("---")
 
-    # Melhores analistas para esse ativo
+    # Best analysts for this asset
     df_best = query("""
         SELECT
             a.name  AS analyst,
@@ -779,20 +871,20 @@ elif "Ativo" in page:
     col1, col2 = st.columns([3, 2])
 
     with col1:
-        st.markdown(f"### Melhores analistas para {sel_ticker}")
+        st.markdown(f"### Best Analysts for {sel_ticker}")
         if not df_best.empty:
             disp = df_best[["analyst", "firm", "total", "avg_dir", "avg_tgt", "avg_ret", "avg_alpha"]].copy()
-            disp.columns = ["Analista", "Firma", "Recs", "Dir Score", "Tgt Score", "Ret% médio", "Alpha"]
+            disp.columns = ["Analyst", "Firm", "Recs", "Dir Score", "Tgt Score", "Avg Ret%", "Alpha"]
             disp["Dir Score"]  = disp["Dir Score"].apply(fmt_score)
             disp["Tgt Score"]  = disp["Tgt Score"].apply(fmt_score)
-            disp["Ret% médio"] = disp["Ret% médio"].apply(fmt_pct)
+            disp["Avg Ret%"] = disp["Avg Ret%"].apply(fmt_pct)
             disp["Alpha"]      = disp["Alpha"].apply(fmt_pct)
             st.dataframe(disp, use_container_width=True, hide_index=True)
         else:
-            st.info("Sem dados de performance para este ativo ainda.")
+            st.info("No performance data for this asset yet.")
 
     with col2:
-        st.markdown("### Consenso atual")
+        st.markdown("### Current Consensus")
         df_consensus = query("""
             SELECT direction, COUNT(*) AS n
             FROM positions pos
@@ -820,11 +912,11 @@ elif "Ativo" in page:
             )
             st.plotly_chart(fig_pie, use_container_width=True)
         else:
-            st.info("Sem recomendações recentes (últimos 180 dias).")
+            st.info("No recent recommendations (last 180 days).")
 
-    # Histórico de preços + recomendações
+    # Price history + recommendations
     st.markdown("---")
-    st.markdown(f"### Preço histórico + recomendações")
+    st.markdown(f"### Price History + Recommendations")
 
     df_price = query("""
         SELECT ph.date, ph.close
@@ -851,16 +943,16 @@ elif "Ativo" in page:
     if not df_price.empty:
         fig_price = go.Figure()
 
-        # Linha de preço
+        # Price line
         fig_price.add_trace(go.Scatter(
             x=df_price["date"],
             y=df_price["close"],
             mode="lines",
             line=dict(color="#4f9cf9", width=1.5),
-            name="Preço fechamento",
+            name="Closing Price",
         ))
 
-        # Marcadores de recomendação
+        # Recommendation markers
         if not df_recs_asset.empty:
             color_map = {"buy": "#3ecf8e", "sell": "#f96060", "hold": "#f9c74f"}
             symbol_map = {"buy": "triangle-up", "sell": "triangle-down", "hold": "circle"}
@@ -896,30 +988,30 @@ elif "Ativo" in page:
         )
         st.plotly_chart(fig_price, use_container_width=True)
     else:
-        st.info("Sem histórico de preços. Rode price_fetcher.py.")
+        st.info("No price history. Run price_fetcher.py.")
 
 
 # ─────────────────────────────────────────────
-# PAGE: RECOMENDAÇÕES
+# PAGE: RECOMMENDATIONS
 # ─────────────────────────────────────────────
 
-elif "Recomendações" in page:
-    st.markdown("# 📰 Feed de Recomendações")
+elif "Recommendations" in page:
+    st.markdown("# 📰 Recommendations Feed")
 
     df_recs = load_recommendations(market_filter, *year_range)
 
     if df_recs.empty:
-        st.warning("Sem recomendações no período selecionado.")
+        st.warning("No recommendations in the selected period.")
         st.stop()
 
-    # Filtros extras
+    # Extra filters
     col1, col2, col3 = st.columns(3)
     with col1:
-        dir_filter = st.multiselect("Direção", ["buy", "sell", "hold"], default=["buy", "sell", "hold"])
+        dir_filter = st.multiselect("Direction", ["buy", "sell", "hold"], default=["buy", "sell", "hold"])
     with col2:
         ticker_filter = st.multiselect("Ticker", sorted(df_recs["ticker"].unique().tolist()))
     with col3:
-        firm_filter = st.multiselect("Firma", sorted(df_recs["firm"].unique().tolist()))
+        firm_filter = st.multiselect("Firm", sorted(df_recs["firm"].unique().tolist()))
 
     filtered = df_recs.copy()
     if dir_filter:
@@ -929,20 +1021,20 @@ elif "Recomendações" in page:
     if firm_filter:
         filtered = filtered[filtered["firm"].isin(firm_filter)]
 
-    st.caption(f"{len(filtered)} recomendações encontradas")
+    st.caption(f"{len(filtered)} recommendations found")
     st.markdown("---")
 
     # KPIs
     c1, c2, c3, c4 = st.columns(4)
     has_perf = filtered.dropna(subset=["direction_score"])
-    c1.metric("Total recomendações",   len(filtered))
-    c2.metric("Avaliadas",             len(has_perf))
-    c3.metric("Dir Score médio",       fmt_score(has_perf["direction_score"].mean()) if not has_perf.empty else "—")
-    c4.metric("Alpha médio",           fmt_pct(has_perf["alpha_vs_spy"].fillna(has_perf["alpha_vs_ibov"]).mean()) if not has_perf.empty else "—")
+    c1.metric("Total recommendations", len(filtered))
+    c2.metric("Evaluated",              len(has_perf))
+    c3.metric("Avg Dir Score",          fmt_score(has_perf["direction_score"].mean()) if not has_perf.empty else "—")
+    c4.metric("Avg Alpha",              fmt_pct(has_perf["alpha_vs_spy"].fillna(has_perf["alpha_vs_ibov"]).mean()) if not has_perf.empty else "—")
 
     st.markdown("---")
 
-    # Tabela
+    # Table
     disp = filtered[[
         "rec_date", "ticker", "analyst", "firm", "country",
         "direction", "price_at_rec", "price_target",
@@ -950,31 +1042,31 @@ elif "Recomendações" in page:
     ]].copy()
 
     disp.columns = [
-        "Data", "Ticker", "Analista", "Firma", "País",
-        "Direção", "Entrada", "Target",
-        "Retorno %", "Dir Score"
+        "Date", "Ticker", "Analyst", "Firm", "Country",
+        "Direction", "Entry", "Target",
+        "Return %", "Dir Score"
     ]
-    disp["País"]      = disp["País"].map({"BR": "🇧🇷", "US": "🇺🇸"}).fillna("🌐")
-    disp["Direção"]   = disp["Direção"].map({"buy": "🟢 BUY", "sell": "🔴 SELL", "hold": "🟡 HOLD"})
-    disp["Retorno %"] = disp["Retorno %"].apply(fmt_pct)
+    disp["Country"]   = disp["Country"].map({"BR": "🇧🇷", "US": "🇺🇸"}).fillna("🌐")
+    disp["Direction"]  = disp["Direction"].map({"buy": "🟢 BUY", "sell": "🔴 SELL", "hold": "🟡 HOLD"})
+    disp["Return %"]  = disp["Return %"].apply(fmt_pct)
     disp["Dir Score"] = disp["Dir Score"].apply(fmt_score)
 
     st.dataframe(disp, use_container_width=True, height=480)
 
-    # Gráfico de distribuição de retornos
+    # Return distribution chart
     if not has_perf.empty:
         st.markdown("---")
         col1, col2 = st.columns(2)
 
         with col1:
-            st.markdown("### Distribuição de retornos")
+            st.markdown("### Return Distribution")
             fig = px.histogram(
                 has_perf.dropna(subset=["return_pct"]),
                 x="return_pct",
                 color="direction",
                 nbins=40,
                 color_discrete_map={"buy": "#3ecf8e", "sell": "#f96060", "hold": "#f9c74f"},
-                labels={"return_pct": "Retorno %"},
+                labels={"return_pct": "Return %"},
                 opacity=0.8,
                 barmode="overlay",
             )
@@ -987,7 +1079,7 @@ elif "Recomendações" in page:
             st.plotly_chart(fig, use_container_width=True)
 
         with col2:
-            st.markdown("### Direction Score por firma")
+            st.markdown("### Direction Score by Firm")
             firm_perf = has_perf.groupby("firm")["direction_score"].agg(["mean", "count"])
             firm_perf = firm_perf[firm_perf["count"] >= 3].sort_values("mean", ascending=True)
             firm_perf = firm_perf.tail(15)
@@ -1015,18 +1107,18 @@ elif "Recomendações" in page:
 
 elif "Risk" in page:
     st.markdown("# 🎯 Risk Assessment")
-    st.caption("Probabilidade calibrada de uma call estar certa — antes de você seguir ela.")
+    st.caption("Calibrated probability of a call being right — before you follow it.")
 
     if not RISK_ENGINE_AVAILABLE:
-        st.error("risk_engine.py não encontrado. Coloque-o na mesma pasta que dashboard.py.")
+        st.error("risk_engine.py not found. Place it in the same folder as dashboard.py.")
         st.stop()
 
     st.markdown("---")
 
-    # ── FORMULÁRIO DE AVALIAÇÃO ──────────────────────
-    st.markdown("### Avaliar uma call")
+    # ── EVALUATION FORM ─────────────────────────
+    st.markdown("### Evaluate a Call")
 
-    # Carregar analistas e tickers disponíveis
+    # Load available analysts and tickers
     df_analysts = query("""
         SELECT DISTINCT a.name, s.country
         FROM analysts a JOIN sources s ON s.id = a.source_id
@@ -1041,10 +1133,10 @@ elif "Risk" in page:
     col1, col2, col3 = st.columns(3)
     with col1:
         sel_analyst = st.selectbox(
-            "Analista",
+            "Analyst",
             options=df_analysts["name"].tolist() if not df_analysts.empty else [""],
         )
-        sel_direction = st.selectbox("Direção", ["buy", "sell", "hold"],
+        sel_direction = st.selectbox("Direction", ["buy", "sell", "hold"],
                                      format_func=lambda x: {"buy": "📈 BUY", "sell": "📉 SELL", "hold": "➡️ HOLD"}[x])
 
     with col2:
@@ -1052,17 +1144,17 @@ elif "Risk" in page:
             "Ticker",
             options=df_tickers["ticker"].tolist() if not df_tickers.empty else [""],
         )
-        sel_price = st.number_input("Preço atual ($)", min_value=0.01, value=100.0, step=0.5)
+        sel_price = st.number_input("Current price ($)", min_value=0.01, value=100.0, step=0.5)
 
     with col3:
-        sel_target = st.number_input("Preço-alvo ($)", min_value=0.0, value=0.0, step=0.5,
-                                     help="Deixe 0 se não houver preço-alvo")
-        sel_date   = st.date_input("Data da call", value=date.today())
+        sel_target = st.number_input("Price target ($)", min_value=0.0, value=0.0, step=0.5,
+                                     help="Leave 0 if there is no price target")
+        sel_date   = st.date_input("Call date", value=date.today())
 
-    run_btn = st.button("🔍 Calcular probabilidade", type="primary", use_container_width=True)
+    run_btn = st.button("🔍 Calculate probability", type="primary", use_container_width=True)
 
     if run_btn and sel_analyst and sel_ticker and sel_price > 0:
-        with st.spinner("Calculando dimensões de risco..."):
+        with st.spinner("Calculating risk dimensions..."):
             result = _evaluate_call(
                 ticker=sel_ticker,
                 analyst_name=sel_analyst,
@@ -1079,10 +1171,10 @@ elif "Risk" in page:
         upside   = result.get("upside_pct")
         n_hist   = result["n_calls_history"]
 
-        # ── RESULTADO PRINCIPAL ──────────────────────
+        # ── MAIN RESULT ───────────────────────────
         st.markdown("---")
 
-        # Cor do gauge baseada na probabilidade
+        # Gauge color based on probability
         if prob >= 75:
             gauge_color = "#3ecf8e"
         elif prob >= 62:
@@ -1129,37 +1221,37 @@ elif "Risk" in page:
 
         with col_m:
             st.markdown(f"### {sel_ticker} {sel_direction.upper()}")
-            st.markdown(f"**Analista:** {sel_analyst}")
-            st.markdown(f"**Preço atual:** ${sel_price:.2f}")
+            st.markdown(f"**Analyst:** {sel_analyst}")
+            st.markdown(f"**Current price:** ${sel_price:.2f}")
             if sel_target > 0:
                 st.markdown(f"**Target:** ${sel_target:.2f}  {'(+' + str(round(upside,1)) + '%)' if upside else ''}")
-            st.markdown(f"**Histórico no banco:** {n_hist} calls")
+            st.markdown(f"**History in database:** {n_hist} calls")
             st.markdown("---")
 
-            # Interpretação
+            # Interpretation
             if prob >= 75:
-                interp = "✅ Sinal forte — histórico e contexto favorecem essa call."
+                interp = "✅ Strong signal — history and context favor this call."
             elif prob >= 62:
-                interp = "🟡 Sinal moderado — call razoável, monitore de perto."
+                interp = "🟡 Moderate signal — reasonable call, monitor closely."
             elif prob >= 50:
-                interp = "🟠 Sinal neutro — incerteza considerável. Dimensione posição com cuidado."
+                interp = "🟠 Neutral signal — considerable uncertainty. Size position carefully."
             elif prob >= 38:
-                interp = "🔴 Sinal fraco — histórico ou contexto desfavorável. Alta cautela."
+                interp = "🔴 Weak signal — unfavorable history or context. High caution."
             else:
-                interp = "🚨 Sinal negativo — múltiplos fatores contra. Evite ou proteja com hedge."
+                interp = "🚨 Negative signal — multiple factors against. Avoid or hedge."
             st.info(interp)
 
-        # ── BREAKDOWN POR DIMENSÃO ───────────────────
+        # ── DIMENSION BREAKDOWN ───────────────────────
         st.markdown("---")
-        st.markdown("### Breakdown por dimensão")
+        st.markdown("### Dimension Breakdown")
 
         dim_labels = {
-            "analyst_asset":  ("Hist. Analista × Ativo",   "Peso 30% — o mais importante"),
-            "analyst_sector": ("Hist. Analista × Setor",   "Peso 20% — fallback quando sem histórico no ativo"),
-            "magnitude":      ("Magnitude do upside",       "Peso 20% — calls agressivas têm menor base rate"),
-            "consensus":      ("Alinhamento c/ consenso",   "Peso 10% — contrarian ou herd?"),
-            "recency":        ("Recência da call",           "Peso 10% — call velha perde força"),
-            "volatility_fit": ("Fit com volatilidade",      "Peso 10% — acerto varia com regime de mercado"),
+            "analyst_asset":  ("Analyst × Asset History",   "Weight 30% — most important"),
+            "analyst_sector": ("Analyst × Sector History",  "Weight 20% — fallback when no asset history"),
+            "magnitude":      ("Upside Magnitude",          "Weight 20% — aggressive calls have lower base rate"),
+            "consensus":      ("Consensus Alignment",       "Weight 10% — contrarian or herd?"),
+            "recency":        ("Call Recency",               "Weight 10% — old calls lose strength"),
+            "volatility_fit": ("Volatility Fit",            "Weight 10% — accuracy varies with market regime"),
         }
 
         dims = result["dimensions"]
@@ -1181,15 +1273,15 @@ elif "Risk" in page:
                 st.markdown(f"<span style='color:{color};font-family:monospace;font-size:1.1rem;font-weight:600'>{score:.2f}</span>",
                             unsafe_allow_html=True)
 
-            st.markdown("")  # espaçamento
+            st.markdown("")  # spacing
 
     elif run_btn:
-        st.warning("Preencha analista, ticker e preço atual.")
+        st.warning("Fill in analyst, ticker and current price.")
 
-    # ── HISTÓRICO DE ASSESSMENTS SALVOS ─────────────
+    # ── SAVED ASSESSMENT HISTORY ─────────────────
     st.markdown("---")
-    st.markdown("### Calls já avaliadas")
-    st.caption("Rode `python risk_engine.py --calc-all` para calcular em lote.")
+    st.markdown("### Evaluated Calls")
+    st.caption("Run `python risk_engine.py --calc-all` to calculate in batch.")
 
     try:
         df_risk = query("""
@@ -1212,10 +1304,10 @@ elif "Risk" in page:
         if not df_risk.empty:
             # KPIs
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Calls avaliadas",    len(df_risk))
-            c2.metric("Prob. média",        f"{df_risk['probability'].mean()*100:.1f}%")
-            c3.metric("Alta confiança (>75%)", len(df_risk[df_risk['probability'] >= 0.75]))
-            c4.metric("Baixa confiança (<50%)", len(df_risk[df_risk['probability'] < 0.50]))
+            c1.metric("Evaluated calls",     len(df_risk))
+            c2.metric("Avg probability",      f"{df_risk['probability'].mean()*100:.1f}%")
+            c3.metric("High confidence (>75%)", len(df_risk[df_risk['probability'] >= 0.75]))
+            c4.metric("Low confidence (<50%)",  len(df_risk[df_risk['probability'] < 0.50]))
 
             disp = df_risk[[
                 "ticker", "analyst", "direction",
@@ -1223,20 +1315,20 @@ elif "Risk" in page:
                 "dim_analyst_asset", "dim_magnitude", "rec_date"
             ]].copy()
             disp.columns = [
-                "Ticker", "Analista", "Direção",
+                "Ticker", "Analyst", "Direction",
                 "Prob.", "Rating", "Upside%",
-                "Dim: Analista×Ativo", "Dim: Magnitude", "Data rec."
+                "Dim: Analyst×Asset", "Dim: Magnitude", "Rec. Date"
             ]
             disp["Prob."]    = disp["Prob."].apply(lambda x: f"{x*100:.1f}%")
             disp["Upside%"]  = disp["Upside%"].apply(lambda x: f"+{x:.1f}%" if x else "—")
-            disp["Direção"]  = disp["Direção"].map({"buy": "🟢 BUY", "sell": "🔴 SELL", "hold": "🟡 HOLD"})
-            disp["Dim: Analista×Ativo"] = disp["Dim: Analista×Ativo"].apply(fmt_score)
+            disp["Direction"]  = disp["Direction"].map({"buy": "🟢 BUY", "sell": "🔴 SELL", "hold": "🟡 HOLD"})
+            disp["Dim: Analyst×Asset"] = disp["Dim: Analyst×Asset"].apply(fmt_score)
             disp["Dim: Magnitude"]      = disp["Dim: Magnitude"].apply(fmt_score)
 
             st.dataframe(disp, use_container_width=True, height=400, hide_index=True)
 
             # Scatter: Prob × Upside
-            st.markdown("### Probabilidade vs Upside implícito")
+            st.markdown("### Probability vs Implied Upside")
             fig_s = px.scatter(
                 df_risk.dropna(subset=["upside_pct", "probability"]),
                 x="upside_pct",
@@ -1245,10 +1337,10 @@ elif "Risk" in page:
                 hover_name="analyst",
                 hover_data={"ticker": True},
                 color_discrete_map={"buy": "#3ecf8e", "sell": "#f96060", "hold": "#f9c74f"},
-                labels={"x": "Upside implícito (%)", "y": "Probabilidade calibrada (%)"},
+                labels={"x": "Implied Upside (%)", "y": "Calibrated Probability (%)"},
             )
             fig_s.add_hline(y=62, line_dash="dot", line_color="#6b7490", line_width=1,
-                            annotation_text="threshold moderado")
+                            annotation_text="moderate threshold")
             fig_s.update_layout(
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(19,22,30,1)",
@@ -1257,87 +1349,87 @@ elif "Risk" in page:
             st.plotly_chart(fig_s, use_container_width=True)
 
         else:
-            st.info("Nenhum risk assessment calculado ainda. Rode `python risk_engine.py --calc-all`")
+            st.info("No risk assessment calculated yet. Run `python risk_engine.py --calc-all`")
 
     except Exception:
-        st.info("Tabela risk_assessments não encontrada. Rode `python risk_engine.py --calc-all`")
+        st.info("risk_assessments table not found. Run `python risk_engine.py --calc-all`")
 
     # ── BACKLOG ──────────────────────────────────────
     st.markdown("---")
-    with st.expander("📌 Backlog do Produto — Analyst Tracker", expanded=False):
+    with st.expander("📌 Product Backlog — Analyst Tracker", expanded=False):
         st.markdown("""
 ---
-### 🟥 Alta prioridade
+### 🟥 High Priority
 
-**Portfólio simulado por analista** *(scoring_engine + nova aba no dashboard)*
-> "Se você tivesse seguido esse analista em 2023, quanto teria ganho?"
+**Simulated portfolio per analyst** *(scoring_engine + new dashboard tab)*
+> "If you had followed this analyst in 2023, how much would you have made?"
 
-- Calcular retorno anual simulado por analista (2022, 2023, 2024 separados)
-- Equal weight em cada call — cada recomendação aloca 1/N do portfólio
-- Regra de posição aberta: não entra nova call no mesmo ativo se já tem posição
-- Comparar vs benchmark por ano (SPY para US, Ibovespa para BR)
+- Calculate simulated annual return per analyst (2022, 2023, 2024 separately)
+- Equal weight per call — each recommendation allocates 1/N of the portfolio
+- Open position rule: no new call on same asset if position already exists
+- Compare vs benchmark per year (SPY for US, Ibovespa for BR)
 - Output:
-  - Retorno % por ano + alpha vs benchmark
-  - Retorno cumulativo 3 anos
-  - Melhor e pior call individual
-  - Equity curve mês a mês (gráfico de linha)
-- Quanto mais período histórico, melhor a calibração — analista com 50 calls
-  em 3 anos em regimes diferentes vale muito mais que 5 calls num bull market
+  - Return % per year + alpha vs benchmark
+  - Cumulative return over 3 years
+  - Best and worst individual call
+  - Month-by-month equity curve (line chart)
+- The more historical coverage, the better the calibration — an analyst with 50 calls
+  over 3 years in different regimes is worth much more than 5 calls in a bull market
 
-**Scores anuais separados** *(scoring_engine)*
-> Um analista que acertou 80% em 2022 e errou 70% em 2024 não é igual
-> a um consistente nos três anos — o score médio esconde isso
+**Separate yearly scores** *(scoring_engine)*
+> An analyst who was 80% right in 2022 and 70% wrong in 2024 is not the same
+> as one consistent across all three years — the average score hides this
 
-- Calcular hit_rate, direction_score e alpha separado por ano
-- Mostrar tabela anual no perfil do analista:
+- Calculate hit_rate, direction_score and alpha separately per year
+- Show yearly table on analyst profile:
   ```
             2022    2023    2024
   Hit Rate   71%     65%     70%
   Dir Score  0.68    0.61    0.67
   Alpha      +8.2%  +12.1%   +5.4%
   ```
-- Detectar analistas em declínio vs analistas em ascensão
-- Usar tendência temporal como dimensão extra no risk engine
+- Detect declining vs ascending analysts
+- Use temporal trend as an extra dimension in the risk engine
 
 ---
-### 🟧 Média prioridade
+### 🟧 Medium Priority
 
-**Dimensão 7 — Contexto macroeconômico e eventos externos** *(risk_engine)*
-> Entender se eventos externos da época podem explicar erros do analista
-> e ajustar a probabilidade de calls futuras
+**Dimension 7 — Macroeconomic context and external events** *(risk_engine)*
+> Understand if external events at the time can explain analyst errors
+> and adjust probability of future calls
 
-- Banco de eventos macroeconômicos indexados por data:
-  choques de juros Fed/Copom, crises geopolíticas, crashes setoriais,
+- Database of macroeconomic events indexed by date:
+  Fed/Copom rate shocks, geopolitical crises, sector crashes,
   earnings surprises
-- Classificar erros em:
-  - **Erro endógeno** — analista errou a tese, sem evento externo
-  - **Erro exógeno** — evento imprevisível aconteceu após a call
-- Analistas com muitos erros exógenos são reavaliados pra cima no score
-- Se contexto macro atual é incerto (VIX elevado, guerra, FOMC próximo),
-  penalizar probabilidades automaticamente
-- Fontes: FRED API, GDELT, Yahoo Finance earnings, BCB Copom
+- Classify errors as:
+  - **Endogenous error** — analyst got the thesis wrong, no external event
+  - **Exogenous error** — unpredictable event occurred after the call
+- Analysts with many exogenous errors are re-evaluated upward in score
+- If current macro context is uncertain (high VIX, war, upcoming FOMC),
+  automatically penalize probabilities
+- Sources: FRED API, GDELT, Yahoo Finance earnings, BCB Copom
 
-**Cobertura histórica expandida** *(collectors)*
-> Quanto mais período temporal, melhor o modelo se calibra
+**Expanded historical coverage** *(collectors)*
+> The more temporal coverage, the better the model calibrates
 
-- Expandir coleta para 2019–2021 nas fontes disponíveis
-- Capturar comportamento dos analistas em COVID (2020), rally (2021),
-  crash de 2022, bull de 2023 — regimes muito diferentes
-- Quanto mais regimes cobertos, mais o confidence_weight do risk engine
-  vira algo genuinamente preditivo em vez de estimado
+- Expand collection to 2019–2021 from available sources
+- Capture analyst behavior during COVID (2020), rally (2021),
+  2022 crash, 2023 bull — very different regimes
+- The more regimes covered, the more the confidence_weight in risk engine
+  becomes genuinely predictive instead of estimated
 
 ---
-### 🟨 Baixa prioridade / Futuro
+### 🟨 Low Priority / Future
 
-- **Dimensão 8 — Insider trading**: calls alinhadas com insider buying têm maior prob
-- **Dimensão 9 — Revisão de estimativas**: analistas que revisam frequentemente
-  têm mais confiabilidade que os que nunca revisam (sinal de engajamento ativo)
-- **Dimensão 10 — Cross-analyst agreement**: quando 3+ analistas de casas
-  diferentes fazem o mesmo call de forma independente, peso aumenta
-- **Cobertura Europa e LATAM**: expandir além de BR e US
-- **Crowdsourcing**: usuários submetem recomendações que viram, você valida
-- **Alertas**: notificação quando analista com 78%+ de acerto faz nova call
-- **API pública**: acesso programático aos scores para outros produtos
+- **Dimension 8 — Insider trading**: calls aligned with insider buying have higher prob
+- **Dimension 9 — Estimate revisions**: analysts who revise frequently
+  have more reliability than those who never revise (active engagement signal)
+- **Dimension 10 — Cross-analyst agreement**: when 3+ analysts from different
+  firms make the same call independently, weight increases
+- **Europe and LATAM coverage**: expand beyond BR and US
+- **Crowdsourcing**: users submit recommendations they see, you validate
+- **Alerts**: notification when analyst with 78%+ accuracy makes a new call
+- **Public API**: programmatic access to scores for other products
         """)
 
 
@@ -1346,9 +1438,9 @@ elif "Risk" in page:
 # ─────────────────────────────────────────────
 
 elif "Clipping" in page:
-    st.markdown("# 📋 Clipping BR — Revisão de Extrações")
+    st.markdown("# 📋 Clipping BR — Extraction Review")
 
-    # Verificar se tabela existe
+    # Check if table exists
     try:
         df_pending = query("""
             SELECT
@@ -1362,7 +1454,7 @@ elif "Clipping" in page:
             ORDER BY e.confidence DESC
         """)
     except Exception:
-        st.info("Tabela de clipping não encontrada. Rode collector_br.py primeiro.")
+        st.info("Clipping table not found. Run collector_br.py first.")
         st.stop()
 
     # Stats
@@ -1373,40 +1465,40 @@ elif "Clipping" in page:
     if not df_stats.empty:
         cols = st.columns(len(df_stats))
         for i, (_, row) in enumerate(df_stats.iterrows()):
-            label = {"pending": "⏳ Pendentes", "approved": "✅ Aprovadas",
-                     "rejected": "❌ Rejeitadas", "imported": "📥 Importadas"}.get(row["status"], row["status"])
+            label = {"pending": "⏳ Pending", "approved": "✅ Approved",
+                     "rejected": "❌ Rejected", "imported": "📥 Imported"}.get(row["status"], row["status"])
             cols[i].metric(label, int(row["n"]))
 
     st.markdown("---")
 
     if df_pending.empty:
-        st.success("✅ Nenhuma extração pendente de revisão!")
+        st.success("No pending extractions to review!")
     else:
-        st.markdown(f"### {len(df_pending)} extrações aguardando revisão")
-        st.caption("Use `python collector_br.py --approve ID` ou `--reject ID` no terminal.")
+        st.markdown(f"### {len(df_pending)} extractions awaiting review")
+        st.caption("Use `python collector_br.py --approve ID` or `--reject ID` in the terminal.")
 
         for _, row in df_pending.iterrows():
             conf_color = "#3ecf8e" if row["confidence"] >= 0.75 else "#f9c74f" if row["confidence"] >= 0.5 else "#f96060"
             dir_icon   = {"buy": "🟢", "sell": "🔴", "hold": "🟡"}.get(row["direction"], "⚪")
-            pt         = f"R$ {row['price_target']:.2f}" if row["price_target"] else "sem target"
+            pt         = f"R$ {row['price_target']:.2f}" if row["price_target"] else "no target"
 
             with st.expander(
                 f"#{row['id']} | {dir_icon} {row['analyst_name']} → {row['ticker']} {str(row['direction']).upper()} @ {pt} | conf: {row['confidence']:.0%}"
             ):
                 c1, c2 = st.columns(2)
-                c1.markdown(f"**Fonte:** {row['source_name']}")
-                c1.markdown(f"**Data:** {row['rec_date'] or '—'}")
-                c1.markdown(f"**Casa:** {row['source_house'] or '—'}")
-                c2.markdown(f"**Confiança:** `{row['confidence']:.2f}`")
-                c2.markdown(f"**Título:** {row['title'][:80] if row['title'] else '—'}")
+                c1.markdown(f"**Source:** {row['source_name']}")
+                c1.markdown(f"**Date:** {row['rec_date'] or '—'}")
+                c1.markdown(f"**Firm:** {row['source_house'] or '—'}")
+                c2.markdown(f"**Confidence:** `{row['confidence']:.2f}`")
+                c2.markdown(f"**Title:** {row['title'][:80] if row['title'] else '—'}")
                 if row["notes"]:
                     st.caption(f"💬 {row['notes'][:200]}")
                 st.markdown(f"🔗 [{row['article_url'][:70]}]({row['article_url']})")
                 st.code(f"python collector_br.py --approve {row['id']}\npython collector_br.py --reject  {row['id']}")
 
-    # Histórico de importadas
+    # Imported history
     st.markdown("---")
-    st.markdown("### Recomendações importadas via clipping")
+    st.markdown("### Recommendations imported via clipping")
     try:
         df_imported = query("""
             SELECT e.ticker, e.analyst_name, e.direction, e.price_target,
@@ -1418,10 +1510,10 @@ elif "Clipping" in page:
             LIMIT 50
         """)
         if not df_imported.empty:
-            df_imported.columns = ["Ticker", "Analista", "Direção", "Target", "Data", "Confiança", "Fonte"]
-            df_imported["Direção"] = df_imported["Direção"].map({"buy": "🟢 BUY", "sell": "🔴 SELL", "hold": "🟡 HOLD"})
+            df_imported.columns = ["Ticker", "Analyst", "Direction", "Target", "Date", "Confidence", "Source"]
+            df_imported["Direction"] = df_imported["Direction"].map({"buy": "🟢 BUY", "sell": "🔴 SELL", "hold": "🟡 HOLD"})
             st.dataframe(df_imported, use_container_width=True, hide_index=True)
         else:
-            st.info("Nenhuma recomendação importada ainda.")
+            st.info("No imported recommendations yet.")
     except Exception:
-        st.info("Sem dados de clipping importados.")
+        st.info("No imported clipping data.")

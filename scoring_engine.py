@@ -1,16 +1,16 @@
 """
 Analyst Tracker — Scoring Engine v2
 =====================================
-Avalia performance por POSIÇÃO, não por revisão individual.
+Evaluates performance per POSITION, not per individual revision.
 
-  • direction_score  — score contínuo 0→1: quão longe foi na direção certa
-  • target_score     — score contínuo 0→1.5: quão perto chegou do alvo
-  • conviction_score — (target_upgrades - target_downgrades) / max(revisões, 1)
-  • avg_alpha        — retorno médio vs benchmark
-  • consistency      — estabilidade do direction_score ao longo do tempo
-  • composite_score  — ranking final ponderado
+  • direction_score  — continuous score 0→1: how far price moved in the right direction
+  • target_score     — continuous score 0→1.5: how close it got to the target
+  • conviction_score — (target_upgrades - target_downgrades) / max(revisions, 1)
+  • avg_alpha        — average return vs benchmark
+  • consistency      — stability of direction_score over time
+  • composite_score  — weighted final ranking
 
-Lógica dos scores:
+Score logic:
   direction_score:
     BUY:  clamp(return_pct / expected_return, 0, 1)
     SELL: clamp(-return_pct / expected_return, 0, 1)
@@ -20,17 +20,17 @@ Lógica dos scores:
     SELL: (price_at_open - min_price) / (price_at_open - final_target)
 
   conviction_score:
-    (target_upgrades - target_downgrades) / max(total_revisões, 1)
-    Positivo = analista foi crescendo conviction | Negativo = foi caindo
+    (target_upgrades - target_downgrades) / max(total_revisions, 1)
+    Positive = analyst conviction increasing | Negative = decreasing
 
-Uso:
-    python scoring_engine.py                   # calcula tudo + ranking
+Usage:
+    python scoring_engine.py                   # compute all + ranking
     python scoring_engine.py --analyst "Dan Ives"
     python scoring_engine.py --ranking
     python scoring_engine.py --ticker NVDA
     python scoring_engine.py --migrate
 
-Dependências:
+Dependencies:
     pip install pandas
 """
 
@@ -44,7 +44,7 @@ from datetime import date, datetime, timedelta
 try:
     import pandas as pd
 except ImportError:
-    print("❌ Rode: pip install pandas")
+    print("❌ Run: pip install pandas")
     sys.exit(1)
 
 DB_PATH          = "analyst_tracker.db"
@@ -54,7 +54,7 @@ MAX_TARGET_SCORE = 1.5
 
 
 # ─────────────────────────────────────────────
-# CONEXÃO
+# CONNECTION
 # ─────────────────────────────────────────────
 
 def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
@@ -66,17 +66,17 @@ def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
 
 
 # ─────────────────────────────────────────────
-# MIGRAÇÃO — adiciona colunas se não existirem
+# MIGRATION — adds columns if they don't exist
 # ─────────────────────────────────────────────
 
 def migrate(conn: sqlite3.Connection):
     """
-    Garante que as colunas do schema v2 existem.
-    Idempotente — seguro rodar várias vezes.
+    Ensures v2 schema columns exist.
+    Idempotent — safe to run multiple times.
     """
     cursor = conn.cursor()
 
-    # performance — garantir colunas v2
+    # performance — ensure v2 columns
     cursor.execute("PRAGMA table_info(performance)")
     perf_cols = {row["name"] for row in cursor.fetchall()}
     new_perf_cols = [
@@ -88,9 +88,9 @@ def migrate(conn: sqlite3.Connection):
     for col, typ in new_perf_cols:
         if col not in perf_cols:
             cursor.execute(f"ALTER TABLE performance ADD COLUMN {col} {typ}")
-            print(f"  ✅ performance.{col} adicionada")
+            print(f"  ✅ performance.{col} added")
 
-    # analyst_scores — garantir colunas v2
+    # analyst_scores — ensure v2 columns
     cursor.execute("PRAGMA table_info(analyst_scores)")
     score_cols = {row["name"] for row in cursor.fetchall()}
     new_score_cols = [
@@ -106,13 +106,13 @@ def migrate(conn: sqlite3.Connection):
     for col, typ in new_score_cols:
         if col not in score_cols:
             cursor.execute(f"ALTER TABLE analyst_scores ADD COLUMN {col} {typ}")
-            print(f"  ✅ analyst_scores.{col} adicionada")
+            print(f"  ✅ analyst_scores.{col} added")
 
     conn.commit()
 
 
 # ─────────────────────────────────────────────
-# HELPERS DE PREÇO
+# PRICE HELPERS
 # ─────────────────────────────────────────────
 
 def get_price_on_date(
@@ -175,7 +175,7 @@ def get_benchmark_return(
 
 
 # ─────────────────────────────────────────────
-# SCORES CONTÍNUOS
+# CONTINUOUS SCORES
 # ─────────────────────────────────────────────
 
 def calc_direction_score(
@@ -215,7 +215,7 @@ def calc_target_score(
 
 
 # ─────────────────────────────────────────────
-# AVALIAÇÃO DE CADA POSIÇÃO
+# POSITION EVALUATION
 # ─────────────────────────────────────────────
 
 def evaluate_position(
@@ -223,24 +223,24 @@ def evaluate_position(
     pos: sqlite3.Row
 ) -> dict | None:
     """
-    Avalia uma posição completa (do open ao close ou hoje).
-    Calcula direction_score, target_score e conviction_score.
-    Retorna dict com métricas ou None se dados insuficientes.
+    Evaluates a complete position (from open to close or today).
+    Computes direction_score, target_score and conviction_score.
+    Returns dict with metrics or None if insufficient data.
     """
     pos_id          = pos["pos_id"]
     asset_id        = pos["asset_id"]
     direction       = pos["direction"]
     price_at_open   = pos["price_at_open"]
-    price_at_close  = pos["price_at_close"]   # None se posição aberta
+    price_at_close  = pos["price_at_close"]   # None if position is open
     open_date       = pos["open_date"]
-    close_date      = pos["close_date"]       # None se posição aberta
+    close_date      = pos["close_date"]       # None if position is open
     final_target    = pos["final_target"]
     target_upgrades   = pos["target_upgrades"]   or 0
     target_downgrades = pos["target_downgrades"] or 0
     horizon         = pos["horizon_days"] or DEFAULT_HORIZON
     country         = pos["country"]
 
-    # Contar revisões para conviction_score
+    # Count revisions for conviction_score
     cursor = conn.cursor()
     cursor.execute(
         "SELECT COUNT(*) as n FROM recommendations WHERE position_id = ?",
@@ -248,14 +248,14 @@ def evaluate_position(
     )
     total_revisions = max(cursor.fetchone()["n"] or 1, 1)
 
-    # Data de avaliação
+    # Evaluation date
     if close_date:
         eval_date = close_date
     else:
         eval_dt   = datetime.strptime(open_date, "%Y-%m-%d") + timedelta(days=horizon)
         eval_date = min(eval_dt.date(), date.today()).isoformat()
 
-    # Preço de avaliação
+    # Evaluation price
     if close_date and price_at_close:
         price_eval = price_at_close
     else:
@@ -264,10 +264,10 @@ def evaluate_position(
     if not price_eval or not price_at_open:
         return None
 
-    # Retorno da posição
+    # Position return
     return_pct = round(((price_eval - price_at_open) / price_at_open) * 100, 4)
 
-    # Retorno esperado (derivado do target ou default)
+    # Expected return (derived from target or default)
     if final_target and price_at_open:
         expected = abs(((final_target - price_at_open) / price_at_open) * 100)
         if expected < 1.0:
@@ -306,12 +306,12 @@ def evaluate_position(
             alpha_vs_ibov = alpha
 
     # ── Conviction Score ─────────────────────────────
-    # Positivo = analista foi elevando conviction | Negativo = foi caindo
+    # Positive = analyst raised conviction | Negative = lowered
     conviction_score = round(
         (target_upgrades - target_downgrades) / total_revisions, 4
     )
 
-    # Campos legados binários
+    # Legacy binary fields
     hit_direction = None
     hit_target    = None
     if direction_score is not None:
@@ -337,11 +337,11 @@ def evaluate_position(
 
 
 # ─────────────────────────────────────────────
-# SALVAR PERFORMANCE
+# SAVE PERFORMANCE
 # ─────────────────────────────────────────────
 
 def save_performance(conn: sqlite3.Connection, perf: dict):
-    """Upsert de performance para position_id (UNIQUE)."""
+    """Upsert performance for position_id (UNIQUE)."""
     cursor = conn.cursor()
     cursor.execute(
         "SELECT id FROM performance WHERE position_id = ?",
@@ -386,7 +386,7 @@ def save_performance(conn: sqlite3.Connection, perf: dict):
 
 
 # ─────────────────────────────────────────────
-# SCORE AGREGADO POR ANALISTA
+# AGGREGATED ANALYST SCORE
 # ─────────────────────────────────────────────
 
 def compute_consistency(scores: list[float]) -> float:
@@ -408,7 +408,7 @@ def compute_consistency(scores: list[float]) -> float:
 
 
 def compute_analyst_score(conn: sqlite3.Connection, analyst_id: int) -> dict | None:
-    """Agrega todas as performances de um analista em scores unificados por posição."""
+    """Aggregates all performances of an analyst into unified position-based scores."""
     cursor = conn.cursor()
 
     cursor.execute(
@@ -437,7 +437,7 @@ def compute_analyst_score(conn: sqlite3.Connection, analyst_id: int) -> dict | N
     if not rows:
         return None
 
-    # Contar posições (todas, abertas, fechadas)
+    # Count positions (all, open, closed)
     cursor.execute(
         "SELECT COUNT(*) as total FROM positions WHERE analyst_id=?",
         (analyst_id,)
@@ -496,7 +496,7 @@ def compute_analyst_score(conn: sqlite3.Connection, analyst_id: int) -> dict | N
 
 
 def save_analyst_score(conn: sqlite3.Connection, score: dict):
-    """Upsert do score do analista para hoje."""
+    """Upsert analyst score for today."""
     cursor = conn.cursor()
     cursor.execute(
         "SELECT id FROM analyst_scores WHERE analyst_id = ? AND calc_date = ?",
@@ -544,10 +544,10 @@ def save_analyst_score(conn: sqlite3.Connection, score: dict):
 
 def compute_yearly_scores(conn: sqlite3.Connection, analyst_id: int) -> list[dict]:
     """
-    Calcula scores separados por ano para um analista.
-    Permite detectar analistas em ascensão vs declínio.
+    Computes separate scores per year for an analyst.
+    Allows detecting ascending vs declining analysts.
 
-    Retorna lista de dicts, um por ano com dados suficientes:
+    Returns list of dicts, one per year with sufficient data:
       [{year, positions, hit_rate, avg_direction_score, avg_target_score,
         avg_alpha, wins, losses, trend}]
     """
@@ -635,7 +635,7 @@ def compute_yearly_scores(conn: sqlite3.Connection, analyst_id: int) -> list[dic
 
 
 def print_yearly_scores(analyst_name: str):
-    """Imprime tabela de scores anuais para um analista."""
+    """Prints yearly scores table for an analyst."""
     conn   = get_connection()
     cursor = conn.cursor()
 
@@ -645,7 +645,7 @@ def print_yearly_scores(analyst_name: str):
     )
     analyst = cursor.fetchone()
     if not analyst:
-        print(f"❌ Analista não encontrado: '{analyst_name}'")
+        print(f"❌ Analyst not found: '{analyst_name}'")
         conn.close()
         return
 
@@ -653,16 +653,16 @@ def print_yearly_scores(analyst_name: str):
     conn.close()
 
     if not yearly:
-        print(f"❌ Sem dados de performance para {analyst['name']}")
+        print(f"❌ No performance data for {analyst['name']}")
         return
 
     trend_icon = {"ascending": "📈", "declining": "📉", "stable": "➡️"}
     trend = yearly[0]["trend"]
 
     print(f"\n{'═'*72}")
-    print(f"  📊  Scores Anuais — {analyst['name']}  {trend_icon.get(trend, '')} {trend}")
+    print(f"  📊  Yearly Scores — {analyst['name']}  {trend_icon.get(trend, '')} {trend}")
     print(f"{'═'*72}")
-    print(f"  {'Ano':<6} {'Pos.':>5} {'Hit%':>6} {'Dir':>6} {'Tgt':>6} {'Alpha':>8} {'W/L':>7}")
+    print(f"  {'Year':<6} {'Pos.':>5} {'Hit%':>6} {'Dir':>6} {'Tgt':>6} {'Alpha':>8} {'W/L':>7}")
     print(f"  {'─'*6} {'─'*5} {'─'*6} {'─'*6} {'─'*6} {'─'*8} {'─'*7}")
 
     for r in yearly:
@@ -686,17 +686,17 @@ def simulate_portfolio(
     year: int | None = None
 ) -> dict | None:
     """
-    Simula o retorno de um portfólio equal-weight seguindo as calls de um analista.
+    Simulates the return of an equal-weight portfolio following an analyst's calls.
 
-    Regras:
-      - Cada posição recebe peso 1/N (equal-weight)
-      - Não entra nova call no mesmo ativo se já tem posição aberta
-      - Retorno medido do open ao close (ou hoje/horizonte se ainda aberta)
-      - Compara vs benchmark por ano (SPY para US, ^BVSP para BR)
+    Rules:
+      - Each position receives 1/N weight (equal-weight)
+      - No new call on the same asset if position already exists
+      - Return measured from open to close (or today/horizon if still open)
+      - Compare vs benchmark per year (SPY for US, ^BVSP for BR)
 
-    Se year=None, calcula todos os anos. Se year especificado, só aquele ano.
+    If year=None, computes all years. If year specified, only that year.
 
-    Retorna dict com:
+    Returns dict with:
       {years: [{year, n_positions, return_pct, benchmark_return, alpha,
                 best_call, worst_call, monthly_equity}],
        cumulative_return, cumulative_alpha, total_positions}
@@ -770,8 +770,6 @@ def simulate_portfolio(
         if n == 0:
             continue
 
-        total_positions += n
-
         # Calculate equal-weight portfolio return
         returns = []
         best_call  = None
@@ -786,7 +784,7 @@ def simulate_portfolio(
                 if p["price_at_close"] and p["price_at_open"] and p["price_at_open"] > 0:
                     ret = ((p["price_at_close"] - p["price_at_open"]) / p["price_at_open"]) * 100
                 elif p["price_at_open"] and p["price_at_open"] > 0:
-                    # Open position — use current price
+                    # Open position — use current/horizon price
                     horizon = p["horizon_days"] or DEFAULT_HORIZON
                     eval_dt = datetime.strptime(p["open_date"], "%Y-%m-%d") + timedelta(days=horizon)
                     eval_date = min(eval_dt.date(), date.today()).isoformat()
@@ -810,6 +808,8 @@ def simulate_portfolio(
         if not returns:
             continue
 
+        total_positions += len(returns)
+
         # Equal-weight average return for the year
         avg_return = sum(returns) / len(returns)
 
@@ -832,7 +832,7 @@ def simulate_portfolio(
 
         yearly_results.append({
             "year":             yr,
-            "n_positions":      n,
+            "n_positions":      len(returns),
             "return_pct":       round(avg_return, 2),
             "benchmark_return": round(bench_return, 2) if bench_return is not None else None,
             "alpha":            alpha,
@@ -846,13 +846,27 @@ def simulate_portfolio(
 
     cumulative_return = round((cumulative_value - 1) * 100, 2)
 
-    # Cumulative benchmark
-    all_years = [r["benchmark_return"] for r in yearly_results if r["benchmark_return"] is not None]
-    cumulative_bench = 1.0
-    for br in all_years:
-        cumulative_bench *= (1 + br / 100)
-    cumulative_bench_return = round((cumulative_bench - 1) * 100, 2)
-    cumulative_alpha = round(cumulative_return - cumulative_bench_return, 2)
+    # Cumulative benchmark — only compare over years with benchmark data
+    has_bench = [r for r in yearly_results if r["benchmark_return"] is not None]
+    if has_bench and len(has_bench) == len(yearly_results):
+        # All years have benchmark data — straightforward comparison
+        cumulative_bench = 1.0
+        for r in has_bench:
+            cumulative_bench *= (1 + r["benchmark_return"] / 100)
+        cumulative_bench_return = round((cumulative_bench - 1) * 100, 2)
+        cumulative_alpha = round(cumulative_return - cumulative_bench_return, 2)
+    elif has_bench:
+        # Some years missing benchmark — compute alpha only over matched years
+        matched_port = 1.0
+        matched_bench = 1.0
+        for r in has_bench:
+            matched_port  *= (1 + r["return_pct"] / 100)
+            matched_bench *= (1 + r["benchmark_return"] / 100)
+        cumulative_bench_return = round((matched_bench - 1) * 100, 2)
+        cumulative_alpha = round((matched_port - 1) * 100 - cumulative_bench_return, 2)
+    else:
+        cumulative_bench_return = None
+        cumulative_alpha = None
 
     return {
         "years":              yearly_results,
@@ -869,8 +883,8 @@ def _compute_monthly_equity(
     year: int
 ) -> list[dict]:
     """
-    Computa equity curve mensal para um conjunto de posições em um ano.
-    Retorna lista de {month: 'YYYY-MM', equity: float} onde equity começa em 100.
+    Computes monthly equity curve for a set of positions in a year.
+    Returns list of {month: 'YYYY-MM', equity: float} where equity starts at 100.
     """
     monthly = []
     equity = 100.0
@@ -916,7 +930,7 @@ def _compute_monthly_equity(
 
 
 def print_portfolio(analyst_name: str):
-    """Imprime simulação de portfólio para um analista."""
+    """Prints portfolio simulation for an analyst."""
     conn   = get_connection()
     cursor = conn.cursor()
 
@@ -926,7 +940,7 @@ def print_portfolio(analyst_name: str):
     )
     analyst = cursor.fetchone()
     if not analyst:
-        print(f"❌ Analista não encontrado: '{analyst_name}'")
+        print(f"❌ Analyst not found: '{analyst_name}'")
         conn.close()
         return
 
@@ -934,14 +948,14 @@ def print_portfolio(analyst_name: str):
     conn.close()
 
     if not result:
-        print(f"❌ Sem dados para simular portfólio de {analyst['name']}")
+        print(f"❌ No data to simulate portfolio for {analyst['name']}")
         return
 
     print(f"\n{'═'*80}")
-    print(f"  💼  Portfólio Simulado — {analyst['name']}")
-    print(f"  \"Se você tivesse seguido esse analista, quanto teria ganho?\"")
+    print(f"  💼  Simulated Portfolio — {analyst['name']}")
+    print(f"  \"If you had followed this analyst, how much would you have made?\"")
     print(f"{'═'*80}")
-    print(f"  {'Ano':<6} {'Pos.':>5} {'Retorno':>9} {'Bench':>9} {'Alpha':>9} {'Melhor':>18} {'Pior':>18}")
+    print(f"  {'Year':<6} {'Pos.':>5} {'Return':>9} {'Bench':>9} {'Alpha':>9} {'Best':>18} {'Worst':>18}")
     print(f"  {'─'*6} {'─'*5} {'─'*9} {'─'*9} {'─'*9} {'─'*18} {'─'*18}")
 
     for yr in result["years"]:
@@ -953,25 +967,27 @@ def print_portfolio(analyst_name: str):
         print(f"  {yr['year']:<6} {yr['n_positions']:>5} {ret:>9} {bench:>9} {alpha:>9} {best:>18} {worst:>18}")
 
     print(f"  {'─'*80}")
-    print(f"  Retorno cumulativo:  {result['cumulative_return']:+.1f}%")
-    print(f"  Benchmark cumulativo: {result['cumulative_bench']:+.1f}%")
-    print(f"  Alpha cumulativo:    {result['cumulative_alpha']:+.1f}%")
-    print(f"  Total de posições:   {result['total_positions']}")
+    print(f"  Cumulative return:    {result['cumulative_return']:+.1f}%")
+    bench_str = f"{result['cumulative_bench']:+.1f}%" if result['cumulative_bench'] is not None else "—"
+    alpha_str = f"{result['cumulative_alpha']:+.1f}%" if result['cumulative_alpha'] is not None else "—"
+    print(f"  Cumulative benchmark: {bench_str}")
+    print(f"  Cumulative alpha:     {alpha_str}")
+    print(f"  Total positions:      {result['total_positions']}")
     print(f"{'═'*80}\n")
 
 
 # ─────────────────────────────────────────────
-# AUTO-CLOSE DE POSIÇÕES EXPIRADAS
+# AUTO-CLOSE EXPIRED POSITIONS
 # ─────────────────────────────────────────────
 
 def auto_close_expired_positions(conn: sqlite3.Connection, dry_run: bool = False) -> int:
     """
-    Fecha posições cuja janela de avaliação expirou:
-      open_date + horizon_days <= hoje
+    Closes positions whose evaluation window has expired:
+      open_date + horizon_days <= today
 
-    Usa o preço no dia de expiração como price_at_close e registra
-    uma revisão 'close' em recommendations.
-    Retorna o número de posições fechadas.
+    Uses the price on the expiry date as price_at_close and registers
+    a 'close' revision in recommendations.
+    Returns the number of closed positions.
     """
     cursor = conn.cursor()
 
@@ -992,7 +1008,7 @@ def auto_close_expired_positions(conn: sqlite3.Connection, dry_run: bool = False
     expired = cursor.fetchall()
 
     if not expired:
-        print("  ✅ Nenhuma posição expirada.")
+        print("  ✅ No expired positions.")
         return 0
 
     closed = 0
@@ -1006,7 +1022,7 @@ def auto_close_expired_positions(conn: sqlite3.Connection, dry_run: bool = False
             continue
 
         if dry_run:
-            print(f"  [dry] {pos['ticker']:<6} aberto={pos['open_date']}  expira={expiry}  preço={price_close:.2f}")
+            print(f"  [dry] {pos['ticker']:<6} opened={pos['open_date']}  expires={expiry}  price={price_close:.2f}")
             continue
 
         cursor.execute(
@@ -1016,7 +1032,7 @@ def auto_close_expired_positions(conn: sqlite3.Connection, dry_run: bool = False
         cursor.execute(
             """INSERT INTO recommendations
                (position_id, rec_type, rec_date, price_at_rec, direction, notes)
-               VALUES (?, 'close', ?, ?, ?, 'Auto-fechado: horizonte expirado')""",
+               VALUES (?, 'close', ?, ?, ?, 'Auto-closed: horizon expired')""",
             (pos["pos_id"], expiry, price_close, pos["direction"])
         )
         closed += 1
@@ -1028,7 +1044,7 @@ def auto_close_expired_positions(conn: sqlite3.Connection, dry_run: bool = False
 
 
 # ─────────────────────────────────────────────
-# PIPELINE PRINCIPAL
+# MAIN PIPELINE
 # ─────────────────────────────────────────────
 
 def run_scoring(analyst_filter: str = None, auto_close: bool = False):
@@ -1038,9 +1054,9 @@ def run_scoring(analyst_filter: str = None, auto_close: bool = False):
     migrate(conn)
 
     if auto_close:
-        print("\n🔒 Auto-fechando posições expiradas...")
-        n = auto_close_expired_positions(conn)
-        print(f"  → {n} posições fechadas.\n")
+            print("\n🔒 Auto-closing expired positions...")
+            n = auto_close_expired_positions(conn)
+            print(f"  → {n} positions closed.\n")
 
     if analyst_filter:
         cursor.execute(
@@ -1058,13 +1074,13 @@ def run_scoring(analyst_filter: str = None, auto_close: bool = False):
     analysts = cursor.fetchall()
 
     if not analysts:
-        print("❌ Nenhum analista com posições encontrado.")
-        print("   Rode collector_us.py ou collector_br.py para adicionar dados.")
+        print("❌ No analysts with positions found.")
+        print("   Run collector_us.py or collector_br.py to add data.")
         conn.close()
         return
 
-    print(f"\n🔢 Calculando scores de {len(analysts)} analista(s) por posição...\n")
-    print(f"  {'Analista':<28} {'Aval.':>5} {'Skip':>5} {'Dir':>6} {'Tgt':>6} {'Conv':>6} {'Alpha':>7}")
+    print(f"\n🔢 Computing scores for {len(analysts)} analyst(s) by position...\n")
+    print(f"  {'Analyst':<28} {'Eval.':>5} {'Skip':>5} {'Dir':>6} {'Tgt':>6} {'Conv':>6} {'Alpha':>7}")
     print(f"  {'─'*28} {'─'*5} {'─'*5} {'─'*6} {'─'*6} {'─'*6} {'─'*7}")
 
     for analyst in analysts:
@@ -1115,19 +1131,19 @@ def run_scoring(analyst_filter: str = None, auto_close: bool = False):
 
         print(f"  {analyst_name[:27]:<28} {perf_count:>5} {skip_count:>5} {ds:>6} {ts:>6} {conv:>6} {alp:>7}")
 
-    print(f"\n✅ Scoring por posição concluído.\n")
+    print(f"\n✅ Position-based scoring complete.\n")
     conn.close()
 
 
 # ─────────────────────────────────────────────
-# COMPOSITE SCORE E RANKING
+# COMPOSITE SCORE AND RANKING
 # ─────────────────────────────────────────────
 
 def composite_score(row: dict) -> float:
     """
-    Score composto para ranking final (0→100).
+    Composite score for final ranking (0→100).
 
-    Pesos:
+    Weights:
       avg_direction_score  40%
       avg_target_score     25%
       avg_alpha (norm)     25%
@@ -1176,7 +1192,7 @@ def print_ranking(top_n: int = 20):
     conn.close()
 
     if not rows:
-        print("❌ Nenhum score calculado. Rode: python scoring_engine.py")
+        print("❌ No scores computed. Run: python scoring_engine.py")
         return
 
     data = sorted(
@@ -1186,10 +1202,10 @@ def print_ranking(top_n: int = 20):
     )[:top_n]
 
     print(f"\n{'═'*96}")
-    print(f"  🏆  RANKING DE ANALISTAS — Analyst Tracker  (avaliação por posição)")
-    print(f"  Calculado em: {data[0]['calc_date']}")
+    print(f"  🏆  ANALYST RANKING — Analyst Tracker  (position-based evaluation)")
+    print(f"  Computed on: {data[0]['calc_date']}")
     print(f"{'═'*96}")
-    print(f"  {'#':<3} {'Analista':<26} {'Fonte':<20} {'Dir':>5} {'Tgt':>5} {'Conv':>6} {'Alpha':>7} {'Pos.':>5} {'Score':>7}")
+    print(f"  {'#':<3} {'Analyst':<26} {'Firm':<20} {'Dir':>5} {'Tgt':>5} {'Conv':>6} {'Alpha':>7} {'Pos.':>5} {'Score':>7}")
     print(f"  {'─'*3} {'─'*26} {'─'*20} {'─'*5} {'─'*5} {'─'*6} {'─'*7} {'─'*5} {'─'*7}")
 
     for i, d in enumerate(data, 1):
@@ -1208,16 +1224,16 @@ def print_ranking(top_n: int = 20):
 
     print(f"{'═'*96}")
     print(f"  Dir = direction_score (0→1) | Tgt = target_score (0→1.5) | Conv = conviction")
-    print(f"  Score composto: Dir×40% + Tgt×25% + Alpha×25% + Consistency×10%")
+    print(f"  Composite score: Dir×40% + Tgt×25% + Alpha×25% + Consistency×10%")
     print(f"{'═'*96}\n")
 
 
 # ─────────────────────────────────────────────
-# ANÁLISE POR ATIVO
+# ANALYSIS BY ASSET
 # ─────────────────────────────────────────────
 
 def best_analysts_for_ticker(ticker: str, top_n: int = 5):
-    """Quem mais acertou posições em um ativo específico."""
+    """Who performed best on positions for a specific asset."""
     conn   = get_connection()
     cursor = conn.cursor()
 
@@ -1248,13 +1264,13 @@ def best_analysts_for_ticker(ticker: str, top_n: int = 5):
     conn.close()
 
     if not rows:
-        print(f"❌ Sem dados de performance para {ticker}")
+        print(f"❌ No performance data for {ticker}")
         return
 
     print(f"\n{'─'*76}")
-    print(f"  📊  Melhores analistas para {ticker.upper()}")
+    print(f"  📊  Best analysts for {ticker.upper()}")
     print(f"{'─'*76}")
-    print(f"  {'Analista':<24} {'Fonte':<18} {'Dir':>5} {'Tgt':>5} {'Conv':>6} {'Ret%':>7} {'Pos.':>5}")
+    print(f"  {'Analyst':<24} {'Firm':<18} {'Dir':>5} {'Tgt':>5} {'Conv':>6} {'Ret%':>7} {'Pos.':>5}")
     print(f"  {'─'*24} {'─'*18} {'─'*5} {'─'*5} {'─'*6} {'─'*7} {'─'*5}")
     for row in rows:
         ds   = f"{row['avg_dir']:.2f}"      if row["avg_dir"]    is not None else "—"
@@ -1271,7 +1287,7 @@ def best_analysts_for_ticker(ticker: str, top_n: int = 5):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Analyst Tracker — Scoring Engine v2 (avaliação por posição)"
+        description="Analyst Tracker — Scoring Engine v2 (position-based evaluation)"
     )
     parser.add_argument("--analyst",    "-a", type=str,  default=None)
     parser.add_argument("--ranking",    "-r", action="store_true")
@@ -1279,13 +1295,13 @@ def parse_args():
     parser.add_argument("--top",        "-n", type=int,  default=20)
     parser.add_argument("--migrate",    "-m", action="store_true")
     parser.add_argument("--auto-close", "-c", action="store_true",
-                        help="Fechar posições expiradas antes de calcular scores")
+                        help="Close expired positions before computing scores")
     parser.add_argument("--dry-run",    "-d", action="store_true",
-                        help="Mostrar quais posições seriam fechadas sem alterar o banco")
+                        help="Show which positions would be closed without modifying the database")
     parser.add_argument("--yearly",     "-y", type=str,  default=None, metavar="ANALYST",
-                        help="Mostrar scores anuais de um analista (ex: --yearly 'Dan Ives')")
+                        help="Show yearly scores for an analyst (e.g.: --yearly 'Dan Ives')")
     parser.add_argument("--portfolio",  "-p", type=str,  default=None, metavar="ANALYST",
-                        help="Simular portfólio de um analista (ex: --portfolio 'Dan Ives')")
+                        help="Simulate portfolio for an analyst (e.g.: --portfolio 'Dan Ives')")
     return parser.parse_args()
 
 
@@ -1293,14 +1309,14 @@ if __name__ == "__main__":
     args = parse_args()
 
     if args.migrate:
-        print("\n🔧 Migrando banco de dados...")
+        print("\n🔧 Migrating database...")
         conn = get_connection()
         migrate(conn)
         conn.close()
-        print("✅ Migração concluída.\n")
+        print("✅ Migration complete.\n")
 
     elif args.dry_run:
-        print("\n🔍 Dry-run: posições que seriam fechadas hoje...")
+        print("\n🔍 Dry-run: positions that would be closed today...")
         conn = get_connection()
         auto_close_expired_positions(conn, dry_run=True)
         conn.close()
@@ -1318,7 +1334,7 @@ if __name__ == "__main__":
         print_portfolio(args.portfolio)
 
     else:
-        print("\n🚀 Analyst Tracker — Scoring Engine v2 (por posição)")
+        print("\n🚀 Analyst Tracker — Scoring Engine v2 (position-based)")
         run_scoring(analyst_filter=args.analyst, auto_close=args.auto_close)
         print_ranking(top_n=args.top)
-        print("✅ Próximo passo: streamlit run dashboard.py")
+        print("✅ Next step: streamlit run dashboard.py")

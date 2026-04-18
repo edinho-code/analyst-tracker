@@ -1,17 +1,17 @@
 """
 Analyst Tracker — Price Fetcher
 ================================
-Baixa histórico de preços (2016–hoje) via Yahoo Finance
-para todos os ativos cadastrados no banco e salva em price_history.
+Downloads price history (2016–today) via Yahoo Finance
+for all assets registered in the database and saves to price_history.
 
-Também baixa os benchmarks SPY e ^BVSP automaticamente.
+Also downloads benchmarks SPY and ^BVSP automatically.
 
-Uso:
-    python price_fetcher.py                   # todos os ativos
-    python price_fetcher.py --ticker NVDA     # ativo específico
-    python price_fetcher.py --since 2020-01-01 # a partir de uma data
+Usage:
+    python price_fetcher.py                   # all assets
+    python price_fetcher.py --ticker NVDA     # specific asset
+    python price_fetcher.py --since 2020-01-01 # from a specific date
 
-Dependências:
+Dependencies:
     pip install yfinance pandas
 """
 
@@ -26,17 +26,17 @@ try:
     import yfinance as yf
     import pandas as pd
 except ImportError:
-    print("❌ Dependências faltando. Rode: pip install yfinance pandas")
+    print("❌ Missing dependencies. Run: pip install yfinance pandas")
     sys.exit(1)
 
 DB_PATH        = "analyst_tracker.db"
 DEFAULT_START  = "2016-01-01"
 DEFAULT_END    = date.today().isoformat()
-SLEEP_BETWEEN  = 0.8   # segundos entre chamadas (evita rate limit)
+SLEEP_BETWEEN  = 0.8   # seconds between calls (avoid rate limit)
 
 
 # ─────────────────────────────────────────────
-# CONEXÃO
+# CONNECTION
 # ─────────────────────────────────────────────
 
 def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
@@ -48,30 +48,30 @@ def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
 
 
 # ─────────────────────────────────────────────
-# FETCH DE PREÇOS
+# PRICE FETCH
 # ─────────────────────────────────────────────
 
 def fetch_prices(ticker: str, start: str, end: str) -> pd.DataFrame:
     """
-    Baixa OHLCV histórico via yfinance.
-    Retorna DataFrame com colunas: date, open, high, low, close, volume.
-    Retorna DataFrame vazio em caso de erro.
+    Downloads historical OHLCV via yfinance.
+    Returns DataFrame with columns: date, open, high, low, close, volume.
+    Returns empty DataFrame on error.
     """
     try:
         tk = yf.Ticker(ticker)
         df = tk.history(start=start, end=end, auto_adjust=True)
 
         if df.empty:
-            print(f"  ⚠️  Sem dados para {ticker}")
+            print(f"  ⚠️  No data for {ticker}")
             return pd.DataFrame()
 
         df = df.reset_index()
         df.columns = [c.lower() for c in df.columns]
 
-        # yfinance retorna datetime com timezone — normalizar para date string
+        # yfinance returns datetime with timezone — normalize to date string
         df["date"] = pd.to_datetime(df["date"]).dt.date.astype(str)
 
-        # Renomear colunas para bater com o schema
+        # Rename columns to match the schema
         rename = {
             "open":   "open",
             "high":   "high",
@@ -82,7 +82,7 @@ def fetch_prices(ticker: str, start: str, end: str) -> pd.DataFrame:
         cols = ["date"] + [c for c in rename if c in df.columns]
         df = df[cols].rename(columns=rename)
 
-        # Arredondar preços para 4 casas
+        # Round prices to 4 decimal places
         for col in ["open", "high", "low", "close"]:
             if col in df.columns:
                 df[col] = df[col].round(4)
@@ -90,18 +90,18 @@ def fetch_prices(ticker: str, start: str, end: str) -> pd.DataFrame:
         return df
 
     except Exception as e:
-        print(f"  ❌ Erro ao buscar {ticker}: {e}")
+        print(f"  ❌ Error fetching {ticker}: {e}")
         return pd.DataFrame()
 
 
 # ─────────────────────────────────────────────
-# SALVAR NO BANCO
+# SAVE TO DATABASE
 # ─────────────────────────────────────────────
 
 def save_prices(conn: sqlite3.Connection, asset_id: int, df: pd.DataFrame) -> int:
     """
-    Insere ou ignora preços no banco (ON CONFLICT IGNORE para não duplicar).
-    Retorna número de linhas novas inseridas.
+    Inserts or ignores prices in the database (ON CONFLICT IGNORE to avoid duplicates).
+    Returns number of new rows inserted.
     """
     if df.empty:
         return 0
@@ -128,14 +128,14 @@ def save_prices(conn: sqlite3.Connection, asset_id: int, df: pd.DataFrame) -> in
             if cursor.rowcount:
                 inserted += 1
         except Exception as e:
-            print(f"  ⚠️  Erro ao salvar linha {row['date']}: {e}")
+            print(f"  ⚠️  Error saving row {row['date']}: {e}")
 
     conn.commit()
     return inserted
 
 
 # ─────────────────────────────────────────────
-# GARANTIR BENCHMARKS
+# ENSURE BENCHMARKS
 # ─────────────────────────────────────────────
 
 BENCHMARKS = [
@@ -144,7 +144,7 @@ BENCHMARKS = [
 ]
 
 def ensure_benchmarks(conn: sqlite3.Connection):
-    """Garante que SPY e ^BVSP estão cadastrados como ativos."""
+    """Ensures SPY and ^BVSP are registered as assets."""
     cursor = conn.cursor()
     for (ticker, name, exchange, sector, country, currency) in BENCHMARKS:
         cursor.execute("SELECT id FROM assets WHERE ticker = ?", (ticker,))
@@ -154,12 +154,12 @@ def ensure_benchmarks(conn: sqlite3.Connection):
                    VALUES (?, ?, ?, ?, ?, ?)""",
                 (ticker, name, exchange, sector, country, currency)
             )
-            print(f"  ➕ Benchmark cadastrado: {ticker}")
+            print(f"  ➕ Benchmark registered: {ticker}")
     conn.commit()
 
 
 # ─────────────────────────────────────────────
-# BUSCAR ÚLTIMO PREÇO DISPONÍVEL
+# GET CLOSEST AVAILABLE PRICE
 # ─────────────────────────────────────────────
 
 def get_price_on_date(
@@ -169,10 +169,10 @@ def get_price_on_date(
     tolerance_days: int = 5
 ) -> float | None:
     """
-    Retorna o preço de fechamento mais próximo de target_date (até tolerance_days antes).
-    Útil para calcular performance de recomendações em datas específicas.
+    Returns the closing price closest to target_date (up to tolerance_days before).
+    Useful for computing recommendation performance on specific dates.
 
-    Exemplo:
+    Example:
         price = get_price_on_date(conn, "NVDA", "2024-03-15")
     """
     cursor = conn.cursor()
@@ -198,12 +198,12 @@ def get_return_between(
     end_date: str
 ) -> float | None:
     """
-    Retorna o retorno percentual de um ativo entre duas datas.
-    Útil para calcular alpha vs benchmark.
+    Returns the percentage return of an asset between two dates.
+    Useful for computing alpha vs benchmark.
 
-    Exemplo:
+    Example:
         ret = get_return_between(conn, "SPY", "2024-01-15", "2024-07-15")
-        # → 12.3  (significa +12.3%)
+        # → 12.3  (means +12.3%)
     """
     p_start = get_price_on_date(conn, ticker, start_date)
     p_end   = get_price_on_date(conn, ticker, end_date)
@@ -214,12 +214,12 @@ def get_return_between(
 
 
 # ─────────────────────────────────────────────
-# PIPELINE PRINCIPAL
+# MAIN PIPELINE
 # ─────────────────────────────────────────────
 
 def run_fetch(ticker_filter: str = None, start: str = DEFAULT_START, end: str = DEFAULT_END):
     """
-    Executa o fetch para todos os ativos (ou um específico).
+    Runs the fetch for all assets (or a specific one).
     """
     conn = get_connection()
     ensure_benchmarks(conn)
@@ -237,11 +237,11 @@ def run_fetch(ticker_filter: str = None, start: str = DEFAULT_START, end: str = 
     assets = cursor.fetchall()
 
     if not assets:
-        print(f"❌ Nenhum ativo encontrado{' para ' + ticker_filter if ticker_filter else ''}.")
+        print(f"❌ No assets found{' for ' + ticker_filter if ticker_filter else ''}.")
         conn.close()
         return
 
-    print(f"\n📥 Baixando preços de {len(assets)} ativo(s) | {start} → {end}\n")
+    print(f"\n📥 Downloading prices for {len(assets)} asset(s) | {start} → {end}\n")
     total_new = 0
     errors    = []
 
@@ -256,37 +256,37 @@ def run_fetch(ticker_filter: str = None, start: str = DEFAULT_START, end: str = 
 
         if df.empty:
             errors.append(ticker)
-            print("sem dados")
+            print("no data")
         else:
             n = save_prices(conn, asset["id"], df)
             total_new += n
-            print(f"{len(df):>5} candles → {n:>5} novos")
+            print(f"{len(df):>5} candles → {n:>5} new")
 
         if i < len(assets):
             time.sleep(SLEEP_BETWEEN)
 
-    # Resumo final
+    # Final summary
     print(f"\n{'─'*55}")
-    print(f"✅ Concluído: {total_new} novos registros inseridos")
+    print(f"✅ Completed: {total_new} new records inserted")
 
     if errors:
-        print(f"⚠️  Falhas ({len(errors)}): {', '.join(errors)}")
+        print(f"⚠️  Failures ({len(errors)}): {', '.join(errors)}")
 
-    # Contar total no banco
+    # Count total in database
     cursor.execute("SELECT COUNT(*) as n FROM price_history")
     total = cursor.fetchone()["n"]
-    print(f"📊 Total de candles no banco: {total:,}")
+    print(f"📊 Total candles in database: {total:,}")
     print(f"{'─'*55}\n")
 
     conn.close()
 
 
 # ─────────────────────────────────────────────
-# UTILITÁRIO — MOSTRAR DADOS DE UM ATIVO
+# UTILITY — SHOW ASSET DATA
 # ─────────────────────────────────────────────
 
 def show_asset_prices(ticker: str, limit: int = 10):
-    """Mostra os últimos N preços de um ativo. Útil para debug."""
+    """Shows the last N prices of an asset. Useful for debugging."""
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -303,13 +303,13 @@ def show_asset_prices(ticker: str, limit: int = 10):
     conn.close()
 
     if not rows:
-        print(f"Sem dados para {ticker}")
+        print(f"No data for {ticker}")
         return
 
     print(f"\n{'─'*50}")
-    print(f"  {ticker} — últimos {limit} fechamentos")
+    print(f"  {ticker} — last {limit} closes")
     print(f"{'─'*50}")
-    print(f"  {'Data':<12} {'Abertura':>10} {'Fechamento':>12} {'Volume':>14}")
+    print(f"  {'Date':<12} {'Open':>10} {'Close':>12} {'Volume':>14}")
     print(f"  {'─'*10:<12} {'─'*9:>10} {'─'*11:>12} {'─'*13:>14}")
     for row in rows:
         vol = f"{int(row['volume']):,}" if row["volume"] else "—"
@@ -328,23 +328,23 @@ def parse_args():
     parser.add_argument(
         "--ticker", "-t",
         type=str, default=None,
-        help="Ticker específico (ex: NVDA, PETR4.SA). Padrão: todos os ativos."
+        help="Specific ticker (e.g.: NVDA, PETR4.SA). Default: all assets."
     )
     parser.add_argument(
         "--since", "-s",
         type=str, default=DEFAULT_START,
-        help=f"Data de início (YYYY-MM-DD). Padrão: {DEFAULT_START}"
+        help=f"Start date (YYYY-MM-DD). Default: {DEFAULT_START}"
     )
     parser.add_argument(
         "--until", "-u",
         type=str, default=DEFAULT_END,
-        help=f"Data de fim (YYYY-MM-DD). Padrão: hoje ({DEFAULT_END})"
+        help=f"End date (YYYY-MM-DD). Default: today ({DEFAULT_END})"
     )
     parser.add_argument(
         "--show", "-S",
         type=str, default=None,
         metavar="TICKER",
-        help="Mostra os últimos preços de um ticker (ex: --show NVDA)"
+        help="Shows latest prices for a ticker (e.g.: --show NVDA)"
     )
     return parser.parse_args()
 
@@ -361,4 +361,4 @@ if __name__ == "__main__":
             start=args.since,
             end=args.until,
         )
-        print("✅ Próximo passo: python scoring_engine.py")
+        print("✅ Next step: python scoring_engine.py")
