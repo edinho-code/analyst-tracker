@@ -1190,7 +1190,52 @@ def run_scoring(analyst_filter: str = None, auto_close: bool = False):
 # COMPOSITE SCORE AND RANKING
 # ─────────────────────────────────────────────
 
-def composite_score(row: dict) -> float:
+# Empirical-Bayes prior strength. Each analyst needs ~SHRINKAGE_K positions
+# to "earn" their raw score; with fewer, their components are pulled toward
+# the cohort mean. This is the standard James–Stein-style fix for ranking
+# lots of analysts on noisy metrics — without it, the top of the leaderboard
+# is dominated by low-n lucky runs rather than skill.
+SHRINKAGE_K = 10.0
+
+
+def _shrink(value: float | None, prior: float | None, n: int, k: float = SHRINKAGE_K) -> float | None:
+    """Weighted average of observed value and cohort prior by n / (n + k)."""
+    if value is None:
+        return prior
+    if prior is None:
+        return value
+    n = max(n or 0, 0)
+    w = n / (n + k) if (n + k) > 0 else 0.0
+    return w * value + (1 - w) * prior
+
+
+def cohort_priors(rows: list[dict]) -> dict:
+    """
+    Cross-sectional means of each composite component across the cohort.
+    Used as shrinkage targets so low-n analysts don't dominate the ranking
+    by variance. Accepts a list of analyst rows (same schema as
+    compute_analyst_score output / analyst_scores rows).
+    """
+    def _collect(key):
+        return [r.get(key) for r in rows if r.get(key) is not None]
+
+    ds_list  = _collect("avg_direction_score")
+    ts_list  = [(v / MAX_TARGET_SCORE) for v in _collect("avg_target_score")]
+    alp_list = _collect("avg_alpha")
+    con_list = _collect("consistency")
+
+    def _mean(lst):
+        return sum(lst) / len(lst) if lst else None
+
+    return {
+        "avg_direction_score":     _mean(ds_list),
+        "avg_target_score_norm":   _mean(ts_list),
+        "avg_alpha":               _mean(alp_list),
+        "consistency":             _mean(con_list),
+    }
+
+
+def composite_score(row: dict, priors: dict | None = None, k: float = SHRINKAGE_K) -> float:
     """
     Composite score for final ranking (0→100).
 
@@ -1199,14 +1244,36 @@ def composite_score(row: dict) -> float:
       avg_target_score     25%
       avg_alpha (norm)     25%
       consistency          10%
-    """
-    ds  = (row.get("avg_direction_score") or 0) * 100
-    ts  = (row.get("avg_target_score")    or 0) / MAX_TARGET_SCORE * 100
-    alp = (row.get("avg_alpha")           or 0)
-    con = (row.get("consistency")         or 0.5) * 100
 
-    alp_norm = max(0.0, min(100.0, (alp + 30) / 60 * 100))
-    return round(ds * 0.40 + ts * 0.25 + alp_norm * 0.25 + con * 0.10, 2)
+    When `priors` is provided, each component is first empirical-Bayes
+    shrunk toward the cohort prior with weight n / (n + k), where n is the
+    analyst's total_positions. This protects the leaderboard against
+    low-n variance (e.g. one lucky 2-position analyst outranking a steady
+    200-position one).
+    """
+    ds_raw  = row.get("avg_direction_score")
+    ts_raw  = row.get("avg_target_score")
+    alp_raw = row.get("avg_alpha")
+    con_raw = row.get("consistency")
+    n       = row.get("total_positions") or 0
+
+    ds  = ds_raw if ds_raw is not None else 0.0
+    ts  = (ts_raw / MAX_TARGET_SCORE) if ts_raw is not None else 0.0
+    alp = alp_raw if alp_raw is not None else 0.0
+    con = con_raw if con_raw is not None else 0.5
+
+    if priors is not None:
+        ds  = _shrink(ds,  priors.get("avg_direction_score"),   n, k)
+        ts  = _shrink(ts,  priors.get("avg_target_score_norm"), n, k)
+        alp = _shrink(alp, priors.get("avg_alpha"),             n, k)
+        con = _shrink(con, priors.get("consistency"),           n, k)
+
+    ds100 = (ds  or 0.0) * 100
+    ts100 = (ts  or 0.0) * 100
+    con100 = (con or 0.0) * 100
+    alp_norm = max(0.0, min(100.0, ((alp or 0.0) + 30) / 60 * 100))
+
+    return round(ds100 * 0.40 + ts100 * 0.25 + alp_norm * 0.25 + con100 * 0.10, 2)
 
 
 def print_ranking(top_n: int = 20):
@@ -1246,9 +1313,14 @@ def print_ranking(top_n: int = 20):
         print("❌ No scores computed. Run: python scoring_engine.py")
         return
 
+    # Compute cohort priors over the FULL cohort before truncating to top_n,
+    # so small-n analysts are shrunk toward the same target the rest see.
+    cohort = [dict(r) for r in rows]
+    priors = cohort_priors(cohort)
+
     data = sorted(
-        [dict(r) for r in rows],
-        key=lambda x: composite_score(x),
+        cohort,
+        key=lambda x: composite_score(x, priors=priors),
         reverse=True
     )[:top_n]
 
@@ -1265,7 +1337,7 @@ def print_ranking(top_n: int = 20):
         conv = f"{d['avg_conviction']:+.2f}"     if d.get("avg_conviction")       is not None else "—"
         alp  = f"{d['avg_alpha']:+.1f}%"         if d.get("avg_alpha")            is not None else "—"
         pos  = d.get("total_positions") or 0
-        cmp  = f"{composite_score(d):.1f}"
+        cmp  = f"{composite_score(d, priors=priors):.1f}"
         flag = "🇧🇷" if d["country"] == "BR" else "🇺🇸" if d["country"] == "US" else "🌐"
 
         print(
@@ -1276,6 +1348,7 @@ def print_ranking(top_n: int = 20):
     print(f"{'═'*96}")
     print(f"  Dir = direction_score (0→1) | Tgt = target_score (0→1.5) | Conv = conviction")
     print(f"  Composite score: Dir×40% + Tgt×25% + Alpha×25% + Consistency×10%")
+    print(f"  Empirical-Bayes shrinkage k={SHRINKAGE_K:.0f} applied to components (n/(n+k)).")
     print(f"{'═'*96}\n")
 
 
