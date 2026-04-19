@@ -1302,9 +1302,13 @@ def print_ranking(top_n: int = 20):
            JOIN sources  s ON s.id = a.source_id
            WHERE sc.calc_date = (
                SELECT MAX(calc_date) FROM analyst_scores WHERE analyst_id = sc.analyst_id
-           )
-           LIMIT ?""",
-        (top_n * 2,)
+           )"""
+        # No LIMIT here: cohort_priors must be computed over the FULL population
+        # (all analysts with a latest score), not an arbitrary subset. Previously
+        # `LIMIT top_n * 2` without ORDER BY meant priors were sampled from a
+        # SQLite-undefined row order, making the ranking non-reproducible and
+        # causing the CLI to diverge from `dashboard.load_ranking` (which has
+        # no LIMIT). Display truncation happens at the `[:top_n]` slice below.
     )
     rows = cursor.fetchall()
     conn.close()
@@ -1313,8 +1317,8 @@ def print_ranking(top_n: int = 20):
         print("❌ No scores computed. Run: python scoring_engine.py")
         return
 
-    # Compute cohort priors over the FULL cohort before truncating to top_n,
-    # so small-n analysts are shrunk toward the same target the rest see.
+    # Compute cohort priors over the full population of ranked analysts, then
+    # sort and truncate to top_n purely for display.
     cohort = [dict(r) for r in rows]
     priors = cohort_priors(cohort)
 
