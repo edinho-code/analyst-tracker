@@ -467,12 +467,96 @@ def score_volatility_fit(
 # FINAL CALIBRATION
 # ─────────────────────────────────────────────
 
+# Cache for calibration parameters loaded from calibration_params.json.
+# Sentinel `_UNSET` distinguishes "not yet attempted" from "attempted,
+# file absent / malformed" (None). See `calibration.py` for the fitter.
+_UNSET = object()
+_CALIBRATION_PARAMS: object = _UNSET
+_UNCALIBRATED_WARNED = False
+
+CALIBRATION_PARAMS_PATH = "calibration_params.json"
+
+
+def _load_calibration_params() -> Optional[dict]:
+    """
+    Lazily load `calibration_params.json` (Platt A/B or isotonic pairs)
+    from the risk_engine directory. Cached after first call. Missing or
+    malformed file → returns None and a one-time stderr warning the
+    next time `calibrate_probability` is invoked.
+    """
+    global _CALIBRATION_PARAMS
+    if _CALIBRATION_PARAMS is _UNSET:
+        import os
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            CALIBRATION_PARAMS_PATH)
+        if not os.path.exists(path):
+            _CALIBRATION_PARAMS = None
+        else:
+            try:
+                with open(path, "r") as fh:
+                    _CALIBRATION_PARAMS = json.load(fh)
+            except (json.JSONDecodeError, OSError):
+                _CALIBRATION_PARAMS = None
+    return _CALIBRATION_PARAMS  # type: ignore[return-value]
+
+
+def _reset_calibration_cache() -> None:
+    """Test hook: force the next call to re-read calibration_params.json."""
+    global _CALIBRATION_PARAMS, _UNCALIBRATED_WARNED
+    _CALIBRATION_PARAMS = _UNSET
+    _UNCALIBRATED_WARNED = False
+
+
+def _warn_uncalibrated_once() -> None:
+    global _UNCALIBRATED_WARNED
+    if not _UNCALIBRATED_WARNED:
+        print(
+            "risk_engine: calibration_params.json not found or malformed — "
+            "using the legacy affine fallback. Output is NOT calibrated. "
+            "Run `python calibration.py --fit` once positions have matured.",
+            file=sys.stderr,
+        )
+        _UNCALIBRATED_WARNED = True
+
+
+def _apply_platt(raw: float, params: dict) -> float:
+    a = float(params.get("A", 0.0))
+    b = float(params.get("B", 0.0))
+    z = a * raw + b
+    # numerically stable sigmoid(-z)
+    if z >= 0:
+        return math.exp(-z) / (1.0 + math.exp(-z))
+    return 1.0 / (1.0 + math.exp(z))
+
+
+def _apply_isotonic(raw: float, params: dict) -> float:
+    pairs = params.get("pairs") or []
+    if not pairs:
+        return raw
+    # pairs are (raw_upper, calibrated_prob) in ascending raw_upper
+    for upper, calibrated in pairs:
+        if raw <= float(upper):
+            return float(calibrated)
+    return float(pairs[-1][1])
+
+
 def calibrate_probability(dimensions: dict) -> float:
     """
-    Combines scores from the 6 dimensions into a final calibrated probability.
+    Combine scores from the 6 dimensions into a final calibrated probability.
 
-    Uses weighted average of scores × dimension_weight × confidence_weight.
-    The confidence_weight reflects how much real data we have for that dimension.
+    Step 1 — weighted raw:
+        raw = Σ (dim_weight × confidence_weight × score) / Σ (dim_weight × confidence_weight)
+
+    Step 2 — calibration:
+        - If `calibration_params.json` is present and valid, apply Platt
+          (``P = sigmoid(-(A*raw + B))``) or isotonic lookup as specified.
+          The file is produced by ``python calibration.py --fit`` against
+          realized `(raw, hit_direction)` pairs.
+        - Otherwise, fall back to the legacy affine squeeze
+          ``0.15 + 0.73 * raw`` and emit a one-time stderr warning that
+          the output is NOT calibrated.
+
+    The signature is stable: downstream callers see a float in [0, 1].
     """
     total_weight = 0.0
     weighted_sum = 0.0
@@ -491,15 +575,21 @@ def calibrate_probability(dimensions: dict) -> float:
 
     raw_prob = weighted_sum / total_weight
 
-    # Platt calibration — smooths extremes (avoids 95%+ or <10%)
-    # Mapping: [0, 1] → [0.15, 0.88]
-    # NOTE: this is an affine squeeze, NOT Platt/isotonic calibration.
-    # Platt calibration would fit P = sigmoid(A * raw_prob + B) with
-    # parameters learned from realized (raw_prob, outcome) pairs on a
-    # holdout. Treat the output as an UNCALIBRATED composite signal
-    # until a proper calibration step is added (tracked as follow-up).
-    calibrated = 0.15 + (raw_prob * 0.73)
+    params = _load_calibration_params()
+    if params and params.get("method") == "platt":
+        calibrated = _apply_platt(raw_prob, params)
+    elif params and params.get("method") == "isotonic":
+        calibrated = _apply_isotonic(raw_prob, params)
+    else:
+        _warn_uncalibrated_once()
+        # Legacy affine squeeze — kept only as backward-compat fallback.
+        # TODO: once `calibration.py --report` shows the fitted model is
+        # stable, retune `confidence_rating` thresholds against fitted
+        # probabilities (see calibration.py --report).
+        calibrated = 0.15 + (raw_prob * 0.73)
 
+    # Clip to a valid probability range for safety.
+    calibrated = max(0.0, min(1.0, calibrated))
     return round(calibrated, 4)
 
 
@@ -507,6 +597,13 @@ def confidence_rating(prob: float, n_calls: int) -> tuple[str, str]:
     """
     Converts probability + data volume into qualitative rating.
     Returns (rating, emoji).
+
+    TODO: these thresholds (0.75 / 0.62 / 0.50 / 0.38) were picked
+    against the legacy uncalibrated affine output. Once a Platt or
+    isotonic fit exists, retune them against the fitted distribution
+    and reliability diagram — run ``python calibration.py --report``
+    and pick bucket edges that correspond to the desired realized
+    hit-rate tiers.
     """
     # High uncertainty when few data points
     if n_calls < MIN_CALLS_MODERATE:
