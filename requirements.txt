@@ -1,8 +1,10 @@
 yfinance
 pandas
+numpy
 plotly
 streamlit
 requests
 beautifulsoup4
 anthropic
 scipy
+pytest
