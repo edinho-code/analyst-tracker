@@ -292,13 +292,70 @@ def query(sql: str, params: tuple = ()) -> pd.DataFrame:
 # HELPERS
 # ─────────────────────────────────────────────
 
-def composite_score(row) -> float:
-    ds  = (row.get("avg_direction_score") or 0) * 100
-    ts  = (row.get("avg_target_score")    or 0) / 1.5 * 100
-    alp = (row.get("avg_alpha")           or 0)
-    con = (row.get("consistency")         or 0.5) * 100
-    alp_norm = max(0.0, min(100.0, (alp + 30) / 60 * 100))
-    return round(ds * 0.40 + ts * 0.25 + alp_norm * 0.25 + con * 0.10, 1)
+# Must match scoring_engine.SHRINKAGE_K so the CLI and dashboard rankings agree.
+SHRINKAGE_K = 10.0
+MAX_TARGET_SCORE = 1.5
+
+
+def _shrink(value, prior, n, k=SHRINKAGE_K):
+    """Empirical-Bayes shrinkage toward cohort prior with weight n / (n + k)."""
+    if value is None:
+        return prior
+    if prior is None:
+        return value
+    n = max(n or 0, 0)
+    w = n / (n + k) if (n + k) > 0 else 0.0
+    return w * value + (1 - w) * prior
+
+
+def cohort_priors(df) -> dict:
+    """Cross-sectional means used as shrinkage targets."""
+    def _mean(series):
+        s = series.dropna() if hasattr(series, "dropna") else [v for v in series if v is not None]
+        return (float(s.mean()) if hasattr(s, "mean") else (sum(s) / len(s))) if len(s) > 0 else None
+
+    if df is None or getattr(df, "empty", True):
+        return {}
+
+    ts_norm = df["avg_target_score"].dropna() / MAX_TARGET_SCORE if "avg_target_score" in df.columns else None
+
+    return {
+        "avg_direction_score":   _mean(df["avg_direction_score"]) if "avg_direction_score" in df.columns else None,
+        "avg_target_score_norm": float(ts_norm.mean()) if ts_norm is not None and len(ts_norm) > 0 else None,
+        "avg_alpha":             _mean(df["avg_alpha"])           if "avg_alpha"           in df.columns else None,
+        "consistency":           _mean(df["consistency"])         if "consistency"         in df.columns else None,
+    }
+
+
+def composite_score(row, priors: dict | None = None, k: float = SHRINKAGE_K) -> float:
+    """
+    Composite score for ranking (0→100). When `priors` is provided, each
+    component is first empirical-Bayes shrunk toward the cohort prior with
+    weight n / (n + k). This matches scoring_engine.composite_score so the
+    CLI and dashboard rankings agree.
+    """
+    ds_raw  = row.get("avg_direction_score")
+    ts_raw  = row.get("avg_target_score")
+    alp_raw = row.get("avg_alpha")
+    con_raw = row.get("consistency")
+    n       = row.get("total_positions") or 0
+
+    ds  = ds_raw if ds_raw is not None else 0.0
+    ts  = (ts_raw / MAX_TARGET_SCORE) if ts_raw is not None else 0.0
+    alp = alp_raw if alp_raw is not None else 0.0
+    con = con_raw if con_raw is not None else 0.5
+
+    if priors:
+        ds  = _shrink(ds,  priors.get("avg_direction_score"),   n, k)
+        ts  = _shrink(ts,  priors.get("avg_target_score_norm"), n, k)
+        alp = _shrink(alp, priors.get("avg_alpha"),             n, k)
+        con = _shrink(con, priors.get("consistency"),           n, k)
+
+    ds100  = (ds  or 0.0) * 100
+    ts100  = (ts  or 0.0) * 100
+    con100 = (con or 0.0) * 100
+    alp_norm = max(0.0, min(100.0, ((alp or 0.0) + 30) / 60 * 100))
+    return round(ds100 * 0.40 + ts100 * 0.25 + alp_norm * 0.25 + con100 * 0.10, 1)
 
 
 def fmt_score(v, suffix="") -> str:
@@ -393,7 +450,8 @@ def load_ranking(markets: list, min_recs: int, year_start: int, year_end: int) -
     if df.empty:
         return df
 
-    df["composite"] = df.apply(composite_score, axis=1)
+    priors = cohort_priors(df)
+    df["composite"] = df.apply(lambda r: composite_score(r, priors=priors), axis=1)
     df = df.sort_values("composite", ascending=False).reset_index(drop=True)
     df.index += 1
     return df
@@ -439,7 +497,10 @@ def load_recommendations(markets: list, year_start: int, year_end: int) -> pd.Da
 
 if "Ranking" in page:
     st.markdown("# 🏆 Analyst Ranking")
-    st.caption(f"Composite score: Direction×40% + Target×25% + Alpha×25% + Consistency×10%")
+    st.caption(
+        f"Composite score: Direction×40% + Target×25% + Alpha×25% + Consistency×10%  ·  "
+        f"empirical-Bayes shrinkage k={SHRINKAGE_K:.0f} (low-n analysts pulled toward the cohort mean)"
+    )
 
     df = load_ranking(market_filter, min_recs, *year_range)
 
