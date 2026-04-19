@@ -15,9 +15,16 @@ Score logic:
     BUY:  clamp(return_pct / expected_return, 0, 1)
     SELL: clamp(-return_pct / expected_return, 0, 1)
 
-  target_score:
-    BUY:  (max_price - price_at_open) / (final_target - price_at_open)
-    SELL: (price_at_open - min_price) / (price_at_open - final_target)
+  target_score (terminal-price basis — how close the TERMINAL price got to
+  the target; avoids rewarding transient intraday-to-eval highs/lows):
+    BUY:  (price_eval - price_at_open) / (final_target - price_at_open)
+    SELL: (price_at_open - price_eval) / (price_at_open - final_target)
+
+  touched_target (binary, auxiliary signal):
+    1 if the extreme price over [open, eval] reached the target, else 0.
+    Kept as a SEPARATE signal — not part of target_score — because using
+    max/min over the window roughly doubles apparent hit rates (reflection
+    principle) and is confounded with volatility and horizon.
 
   conviction_score:
     (target_upgrades - target_downgrades) / max(total_revisions, 1)
@@ -84,6 +91,7 @@ def migrate(conn: sqlite3.Connection):
         ("target_score",     "REAL"),
         ("conviction_score", "REAL"),
         ("price_open",       "REAL"),
+        ("touched_target",   "INTEGER"),
     ]
     for col, typ in new_perf_cols:
         if col not in perf_cols:
@@ -195,23 +203,52 @@ def calc_target_score(
     direction: str,
     price_at_open: float,
     price_target: float,
-    extreme_price: float
+    price_eval: float
 ) -> float | None:
+    """
+    Target score on a TERMINAL-price basis: how close the price at evaluation
+    (close / horizon / today) is to the analyst's target.
+
+    Rationale: using max/min over [open, eval] rewards transient moves that
+    reverse before the thesis matures. Empirically, P(max ≥ target) ≈ 2·P(X_T ≥ target)
+    under random-walk-like dynamics, so max-based scores roughly double the
+    apparent hit rate and are confounded with volatility and horizon length.
+    Use `calc_touched_target` for the max-based binary signal instead.
+    """
     if not price_target or not price_at_open:
         return None
     if direction == "buy":
         distance = price_target - price_at_open
         if distance <= 0:
             return None
-        progress = (extreme_price - price_at_open) / distance
+        progress = (price_eval - price_at_open) / distance
     elif direction == "sell":
         distance = price_at_open - price_target
         if distance <= 0:
             return None
-        progress = (price_at_open - extreme_price) / distance
+        progress = (price_at_open - price_eval) / distance
     else:
         return None
     return round(max(0.0, min(MAX_TARGET_SCORE, progress)), 4)
+
+
+def calc_touched_target(
+    direction: str,
+    price_at_open: float,
+    price_target: float,
+    extreme_price: float
+) -> int | None:
+    """
+    Binary: did the extreme price over the evaluation window reach the target?
+    Kept separate from target_score so it does not inflate the primary metric.
+    """
+    if not price_target or not price_at_open or extreme_price is None:
+        return None
+    if direction == "buy":
+        return 1 if extreme_price >= price_target else 0
+    if direction == "sell":
+        return 1 if extreme_price <= price_target else 0
+    return None
 
 
 # ─────────────────────────────────────────────
@@ -278,18 +315,24 @@ def evaluate_position(
     # ── Direction Score ──────────────────────────────
     direction_score = calc_direction_score(direction, return_pct, expected)
 
-    # ── Target Score ─────────────────────────────────
+    # ── Target Score (terminal price) ────────────────
+    # Primary target metric uses price_eval — NOT the max/min over the window —
+    # so volatility and horizon length don't mechanically inflate scores.
     target_score   = None
+    touched_target = None
     days_to_target = None
 
     if final_target and price_at_open and direction in ("buy", "sell"):
+        target_score = calc_target_score(direction, price_at_open, final_target, price_eval)
+
+        # Auxiliary signal: did the extreme over the window reach the target?
         mode = "max" if direction == "buy" else "min"
         extreme_price, extreme_date = get_extreme_price_in_period(
             conn, asset_id, open_date, eval_date, mode=mode
         )
-        if extreme_price:
-            target_score = calc_target_score(direction, price_at_open, final_target, extreme_price)
-            if target_score and target_score >= 1.0 and extreme_date:
+        if extreme_price is not None:
+            touched_target = calc_touched_target(direction, price_at_open, final_target, extreme_price)
+            if touched_target == 1 and extreme_date:
                 d = datetime.strptime(extreme_date, "%Y-%m-%d")
                 days_to_target = (d - datetime.strptime(open_date, "%Y-%m-%d")).days
 
@@ -311,11 +354,17 @@ def evaluate_position(
         (target_upgrades - target_downgrades) / total_revisions, 4
     )
 
-    # Legacy binary fields
+    # Binary fields
+    # hit_direction: did the position move in the predicted direction by eval?
+    # hit_target:    did the TERMINAL price close within 10% of the target?
+    # touched_target: did the price EVER reach target during the window?
     hit_direction = None
     hit_target    = None
-    if direction_score is not None:
-        hit_direction = 1 if direction_score >= 0.5 else 0
+    if direction is not None and return_pct is not None:
+        if direction == "buy":
+            hit_direction = 1 if return_pct > 0 else 0
+        elif direction == "sell":
+            hit_direction = 1 if return_pct < 0 else 0
     if target_score is not None:
         hit_target = 1 if target_score >= 0.9 else 0
 
@@ -329,6 +378,7 @@ def evaluate_position(
         "target_score":    target_score,
         "hit_direction":   hit_direction,
         "hit_target":      hit_target,
+        "touched_target":  touched_target,
         "alpha_vs_spy":    alpha_vs_spy,
         "alpha_vs_ibov":   alpha_vs_ibov,
         "days_to_target":  days_to_target,
@@ -355,6 +405,7 @@ def save_performance(conn: sqlite3.Connection, perf: dict):
         perf["return_pct"],
         perf["direction_score"], perf["target_score"],
         perf["hit_direction"], perf["hit_target"],
+        perf.get("touched_target"),
         perf["alpha_vs_spy"], perf["alpha_vs_ibov"],
         perf["days_to_target"], perf["conviction_score"],
     )
@@ -364,7 +415,7 @@ def save_performance(conn: sqlite3.Connection, perf: dict):
             """UPDATE performance SET
                eval_date=?, price_open=?, price_eval=?, return_pct=?,
                direction_score=?, target_score=?,
-               hit_direction=?, hit_target=?,
+               hit_direction=?, hit_target=?, touched_target=?,
                alpha_vs_spy=?, alpha_vs_ibov=?,
                days_to_target=?, conviction_score=?,
                updated_at=date('now')
@@ -376,10 +427,10 @@ def save_performance(conn: sqlite3.Connection, perf: dict):
             """INSERT INTO performance
                (position_id, eval_date, price_open, price_eval, return_pct,
                 direction_score, target_score,
-                hit_direction, hit_target,
+                hit_direction, hit_target, touched_target,
                 alpha_vs_spy, alpha_vs_ibov,
                 days_to_target, conviction_score)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (perf["position_id"],) + fields
         )
     conn.commit()

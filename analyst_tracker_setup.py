@@ -203,7 +203,10 @@ CREATE TABLE IF NOT EXISTS performance (
 
     -- Continuous scores (0→1, >1 = exceeded the target)
     direction_score REAL,   -- how far it went in the right direction
-    target_score    REAL,   -- how close it got to the final price target
+    -- target_score: TERMINAL-price basis (how close the price at evaluation
+    -- got to the analyst's target). Does NOT use max/min over the window so
+    -- volatility/horizon don't mechanically inflate the score.
+    target_score    REAL,
 
     -- Alpha vs benchmark
     alpha_vs_spy    REAL,
@@ -217,9 +220,16 @@ CREATE TABLE IF NOT EXISTS performance (
     -- Negative = cut conviction
     conviction_score REAL,
 
-    -- Legacy binary (derived from continuous scores)
+    -- Binary indicators
+    -- hit_direction: did the position move in the predicted direction?
+    -- hit_target:    did the TERMINAL price close within ~10% of target?
+    -- touched_target: did the extreme price reach the target at any point?
+    --                 Auxiliary signal — kept separate from target_score so
+    --                 it doesn't inflate the primary metric (max-over-window
+    --                 roughly doubles apparent hit rates vs terminal-price).
     hit_direction   INTEGER,
     hit_target      INTEGER,
+    touched_target  INTEGER,
 
     updated_at      TEXT DEFAULT (datetime('now'))
 );
