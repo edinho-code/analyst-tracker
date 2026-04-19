@@ -1197,6 +1197,61 @@ def run_scoring(analyst_filter: str = None, auto_close: bool = False):
 # is dominated by low-n lucky runs rather than skill.
 SHRINKAGE_K = 10.0
 
+# Default composite weights (unchanged from the original hard-coded
+# 0.40 / 0.25 / 0.25 / 0.10). These are used when no `composite_weights.json`
+# is present in the working directory — i.e. the out-of-the-box behaviour is
+# byte-identical to pre-weight-fitter runs.
+DEFAULT_WEIGHTS: dict[str, float] = {
+    "direction":   0.40,
+    "target":      0.25,
+    "alpha":       0.25,
+    "consistency": 0.10,
+}
+
+COMPOSITE_WEIGHTS_PATH = "composite_weights.json"
+_WEIGHTS_CACHE: dict[str, float] | None = None
+_WEIGHTS_CACHE_LOGGED: bool = False
+
+
+def _load_weights_once() -> dict[str, float]:
+    """
+    Lazy, process-wide loader for composite weights.
+
+    Tries to read `COMPOSITE_WEIGHTS_PATH` from the current working directory.
+    On success returns the four-weight dict. On failure (missing file, parse
+    error, or missing keys) returns DEFAULT_WEIGHTS and logs a single warning
+    to stderr. Subsequent calls return the cached value.
+    """
+    global _WEIGHTS_CACHE, _WEIGHTS_CACHE_LOGGED
+    if _WEIGHTS_CACHE is not None:
+        return _WEIGHTS_CACHE
+
+    import json
+    import os
+
+    try:
+        with open(COMPOSITE_WEIGHTS_PATH, "r") as fh:
+            raw = json.load(fh)
+        weights = {k: float(raw[k]) for k in ("direction", "target", "alpha", "consistency")}
+    except (FileNotFoundError, KeyError, ValueError, TypeError, OSError) as exc:
+        if not _WEIGHTS_CACHE_LOGGED:
+            if isinstance(exc, FileNotFoundError) or (isinstance(exc, OSError) and not os.path.exists(COMPOSITE_WEIGHTS_PATH)):
+                # Silent fallback is fine here — this is the default state.
+                pass
+            else:
+                print(
+                    f"⚠️  Could not load {COMPOSITE_WEIGHTS_PATH} ({exc}); "
+                    f"falling back to DEFAULT_WEIGHTS.",
+                    file=sys.stderr,
+                )
+            _WEIGHTS_CACHE_LOGGED = True
+        _WEIGHTS_CACHE = dict(DEFAULT_WEIGHTS)
+        return _WEIGHTS_CACHE
+
+    _WEIGHTS_CACHE = weights
+    _WEIGHTS_CACHE_LOGGED = True
+    return _WEIGHTS_CACHE
+
 
 def _shrink(value: float | None, prior: float | None, n: int, k: float = SHRINKAGE_K) -> float | None:
     """Weighted average of observed value and cohort prior by n / (n + k)."""
@@ -1235,15 +1290,26 @@ def cohort_priors(rows: list[dict]) -> dict:
     }
 
 
-def composite_score(row: dict, priors: dict | None = None, k: float = SHRINKAGE_K) -> float:
+def composite_score(
+    row: dict,
+    priors: dict | None = None,
+    k: float = SHRINKAGE_K,
+    weights: dict[str, float] | None = None,
+) -> float:
     """
     Composite score for final ranking (0→100).
 
-    Weights:
-      avg_direction_score  40%
-      avg_target_score     25%
-      avg_alpha (norm)     25%
-      consistency          10%
+    Default weights (also used when no composite_weights.json is present):
+      direction    40%
+      target       25%
+      alpha (norm) 25%
+      consistency  10%
+
+    Pass `weights={"direction":..., "target":..., "alpha":..., "consistency":...}`
+    to override. `None` triggers the lazy loader in `_load_weights_once()`
+    which reads `composite_weights.json` from cwd and falls back to
+    DEFAULT_WEIGHTS if missing — preserving byte-identical behaviour for
+    deployments that have never run the weight fitter.
 
     When `priors` is provided, each component is first empirical-Bayes
     shrunk toward the cohort prior with weight n / (n + k), where n is the
@@ -1273,7 +1339,14 @@ def composite_score(row: dict, priors: dict | None = None, k: float = SHRINKAGE_
     con100 = (con or 0.0) * 100
     alp_norm = max(0.0, min(100.0, ((alp or 0.0) + 30) / 60 * 100))
 
-    return round(ds100 * 0.40 + ts100 * 0.25 + alp_norm * 0.25 + con100 * 0.10, 2)
+    w = weights if weights is not None else _load_weights_once()
+    return round(
+        ds100    * w["direction"]
+        + ts100  * w["target"]
+        + alp_norm * w["alpha"]
+        + con100 * w["consistency"],
+        2,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

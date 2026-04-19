@@ -296,6 +296,33 @@ def query(sql: str, params: tuple = ()) -> pd.DataFrame:
 SHRINKAGE_K = 10.0
 MAX_TARGET_SCORE = 1.5
 
+# Default composite weights, mirrored from scoring_engine.DEFAULT_WEIGHTS so
+# the Streamlit Ranking page and the CLI agree when no composite_weights.json
+# is present. Keep in sync with scoring_engine.py.
+DEFAULT_WEIGHTS = {
+    "direction":   0.40,
+    "target":      0.25,
+    "alpha":       0.25,
+    "consistency": 0.10,
+}
+COMPOSITE_WEIGHTS_PATH = "composite_weights.json"
+_WEIGHTS_CACHE = None
+
+
+def _load_weights_once() -> dict:
+    """Read composite_weights.json once; fall back silently to DEFAULT_WEIGHTS."""
+    global _WEIGHTS_CACHE
+    if _WEIGHTS_CACHE is not None:
+        return _WEIGHTS_CACHE
+    import json
+    try:
+        with open(COMPOSITE_WEIGHTS_PATH, "r") as fh:
+            raw = json.load(fh)
+        _WEIGHTS_CACHE = {k: float(raw[k]) for k in ("direction", "target", "alpha", "consistency")}
+    except Exception:
+        _WEIGHTS_CACHE = dict(DEFAULT_WEIGHTS)
+    return _WEIGHTS_CACHE
+
 
 def _shrink(value, prior, n, k=SHRINKAGE_K):
     """Empirical-Bayes shrinkage toward cohort prior with weight n / (n + k)."""
@@ -327,12 +354,18 @@ def cohort_priors(df) -> dict:
     }
 
 
-def composite_score(row, priors: dict | None = None, k: float = SHRINKAGE_K) -> float:
+def composite_score(
+    row,
+    priors: dict | None = None,
+    k: float = SHRINKAGE_K,
+    weights: dict | None = None,
+) -> float:
     """
     Composite score for ranking (0→100). When `priors` is provided, each
     component is first empirical-Bayes shrunk toward the cohort prior with
-    weight n / (n + k). This matches scoring_engine.composite_score so the
-    CLI and dashboard rankings agree.
+    weight n / (n + k). When `weights` is None the weights are loaded from
+    composite_weights.json (falling back to DEFAULT_WEIGHTS). This matches
+    scoring_engine.composite_score so the CLI and dashboard rankings agree.
     """
     ds_raw  = row.get("avg_direction_score")
     ts_raw  = row.get("avg_target_score")
@@ -355,7 +388,15 @@ def composite_score(row, priors: dict | None = None, k: float = SHRINKAGE_K) -> 
     ts100  = (ts  or 0.0) * 100
     con100 = (con or 0.0) * 100
     alp_norm = max(0.0, min(100.0, ((alp or 0.0) + 30) / 60 * 100))
-    return round(ds100 * 0.40 + ts100 * 0.25 + alp_norm * 0.25 + con100 * 0.10, 1)
+
+    w = weights if weights is not None else _load_weights_once()
+    return round(
+        ds100    * w["direction"]
+        + ts100  * w["target"]
+        + alp_norm * w["alpha"]
+        + con100 * w["consistency"],
+        1,
+    )
 
 
 def fmt_score(v, suffix="") -> str:
