@@ -1276,6 +1276,251 @@ def composite_score(row: dict, priors: dict | None = None, k: float = SHRINKAGE_
     return round(ds100 * 0.40 + ts100 * 0.25 + alp_norm * 0.25 + con100 * 0.10, 2)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Empirical tuning of SHRINKAGE_K
+#
+# The current default (k=10) was a reasonable a-priori guess. Once enough
+# positions accumulate we can estimate k from the data. Two independent
+# estimators are provided:
+#
+#   1. Method-of-moments (Gaussian-Gaussian conjugate):
+#        X_i | θ_i ~ Normal(θ_i, σ² / n_i)
+#        θ_i      ~ Normal(μ, τ²)
+#      Posterior mean of θ_i is (n_i X_i + (σ²/τ²) μ) / (n_i + σ²/τ²),
+#      which matches our shrinkage formula with k = σ²/τ².
+#      σ² is estimated as the pooled within-analyst variance of per-
+#      position scores; τ² by the ANOVA method of moments. This is a
+#      closed-form answer and doesn't need a holdout, but it assumes
+#      within-analyst noise is homoscedastic, which isn't strictly true.
+#
+#   2. Holdout predictive MSE over a k-grid:
+#      For each analyst with ≥ min_n positions, split positions 50/50 in
+#      time. Fit cohort priors from OTHER analysts' early halves, shrink
+#      the held-out analyst's early-half score with each candidate k,
+#      and measure MSE vs their late-half score. Pick the k minimizing
+#      mean MSE across held-out analysts. This is the more honest
+#      "predictive accuracy" framing and makes no Gaussian assumption.
+#
+# Both are computed on `direction_score` (the composite component with
+# the largest weight and the richest position-level observations), then
+# reported. The caller / user picks which to trust.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _tune_k_method_of_moments(
+    conn: sqlite3.Connection,
+    min_n: int = 5,
+) -> dict:
+    """
+    Method-of-moments EB estimator for k = σ²/τ² on direction_score.
+    Returns a diagnostics dict; k = +inf if no between-analyst signal detected.
+    """
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT pos.analyst_id, perf.direction_score
+           FROM performance perf
+           JOIN positions pos ON pos.id = perf.position_id
+           WHERE perf.direction_score IS NOT NULL"""
+    )
+    raw = cursor.fetchall()
+
+    from collections import defaultdict
+    groups: dict[int, list[float]] = defaultdict(list)
+    for r in raw:
+        groups[r["analyst_id"]].append(float(r["direction_score"]))
+    groups = {aid: v for aid, v in groups.items() if len(v) >= min_n}
+
+    K = len(groups)
+    N = sum(len(v) for v in groups.values())
+
+    diag: dict = {
+        "K": K,
+        "N": N,
+        "min_n": min_n,
+        "method": "method_of_moments",
+    }
+
+    if K < 10 or N < 50:
+        diag.update({"k_hat": None, "reason": f"insufficient data (K={K}, N={N})"})
+        return diag
+
+    # Pooled within-analyst variance (σ̂²), Bessel-corrected per group.
+    pooled_ss = 0.0
+    pooled_df = 0
+    for vs in groups.values():
+        n = len(vs)
+        m = sum(vs) / n
+        pooled_ss += sum((v - m) ** 2 for v in vs)
+        pooled_df += (n - 1)
+    sigma2 = pooled_ss / pooled_df if pooled_df > 0 else 0.0
+
+    # Grand mean and ANOVA-style between-group MS. n0 is the design-
+    # effective group size (Satterthwaite); for equal n_i it is n.
+    ns    = [len(v) for v in groups.values()]
+    means = [sum(v) / len(v) for v in groups.values()]
+    grand = sum(n * m for n, m in zip(ns, means)) / sum(ns)
+    ms_between = sum(n * (m - grand) ** 2 for n, m in zip(ns, means)) / (K - 1)
+    n0 = (sum(ns) - sum(n * n for n in ns) / sum(ns)) / (K - 1)
+    tau2 = max(0.0, (ms_between - sigma2) / n0) if n0 > 0 else 0.0
+
+    diag.update({
+        "sigma2":     round(sigma2, 6),
+        "tau2":       round(tau2, 6),
+        "grand_mean": round(grand, 4),
+        "n0":         round(n0, 2),
+    })
+
+    if tau2 <= 1e-9:
+        diag.update({"k_hat": float("inf"), "reason": "tau^2 ≈ 0 (no between-analyst skill signal detected)"})
+        return diag
+
+    diag["k_hat"] = round(sigma2 / tau2, 2)
+    diag["reason"] = "ok"
+    return diag
+
+
+def _tune_k_holdout(
+    conn: sqlite3.Connection,
+    k_grid: list[float] | None = None,
+    min_n: int = 6,
+) -> dict:
+    """
+    Holdout predictive MSE over a k-grid for direction_score.
+    Splits each analyst's positions 50/50 in eval_date order; fits cohort
+    priors on OTHER analysts' early halves; scores the held-out analyst's
+    early half under each k; measures (shrunk_early − late)².
+    """
+    cursor = conn.cursor()
+    cursor.execute(
+        """SELECT pos.analyst_id, perf.direction_score, perf.eval_date
+           FROM performance perf
+           JOIN positions pos ON pos.id = perf.position_id
+           WHERE perf.direction_score IS NOT NULL
+             AND perf.eval_date IS NOT NULL
+           ORDER BY perf.eval_date ASC"""
+    )
+    raw = cursor.fetchall()
+
+    from collections import defaultdict
+    groups: dict[int, list[float]] = defaultdict(list)
+    for r in raw:
+        groups[r["analyst_id"]].append(float(r["direction_score"]))
+    # Need at least 2*min_n so both halves have ≥ min_n/2 observations and
+    # the holdout half has at least 3 points.
+    groups = {aid: v for aid, v in groups.items() if len(v) >= max(min_n, 6)}
+
+    k_grid = k_grid or [0.5, 1, 2, 5, 10, 15, 20, 30, 50, 100]
+    K = len(groups)
+
+    diag: dict = {
+        "K": K,
+        "min_n": min_n,
+        "method": "holdout_mse",
+        "k_grid": k_grid,
+    }
+
+    if K < 10:
+        diag.update({"k_hat": None, "mse_by_k": {}, "reason": f"insufficient analysts (K={K})"})
+        return diag
+
+    early: dict[int, float] = {}
+    late:  dict[int, float] = {}
+    n_early: dict[int, int] = {}
+    for aid, vs in groups.items():
+        half = len(vs) // 2
+        e, l = vs[:half], vs[half:]
+        if not e or not l:
+            continue
+        early[aid]   = sum(e) / len(e)
+        late[aid]    = sum(l) / len(l)
+        n_early[aid] = len(e)
+
+    # Cohort prior per held-out analyst = mean of OTHER analysts' early means.
+    total_early = sum(early.values())
+    n_total = len(early)
+
+    mse_by_k: dict[float, float] = {}
+    for k in k_grid:
+        se = 0.0
+        for aid, e_mean in early.items():
+            prior_mu = (total_early - e_mean) / (n_total - 1) if n_total > 1 else e_mean
+            n_i = n_early[aid]
+            w = n_i / (n_i + k) if (n_i + k) > 0 else 0.0
+            shrunk = w * e_mean + (1 - w) * prior_mu
+            se += (shrunk - late[aid]) ** 2
+        mse_by_k[k] = round(se / max(n_total, 1), 6)
+
+    k_best = min(mse_by_k, key=mse_by_k.get)
+    diag.update({
+        "k_hat":    k_best,
+        "mse_by_k": mse_by_k,
+        "reason":   "ok",
+    })
+    return diag
+
+
+def print_shrinkage_tuning(min_n: int = 5):
+    """
+    CLI entry point: report both EB estimators for SHRINKAGE_K side by side.
+    Does NOT mutate the default; prints a recommendation for the user to
+    set manually in scoring_engine.py (and dashboard.py).
+    """
+    conn = get_connection()
+    try:
+        mom = _tune_k_method_of_moments(conn, min_n=min_n)
+        ho  = _tune_k_holdout(conn, min_n=max(min_n, 6))
+    finally:
+        conn.close()
+
+    print(f"\n{'═'*72}")
+    print(f"  🔧  SHRINKAGE_K — empirical tuning on direction_score")
+    print(f"  Current default: SHRINKAGE_K = {SHRINKAGE_K}")
+    print(f"{'═'*72}")
+
+    print(f"\n  [1] Method-of-moments (Gaussian EB)   K={mom['K']}  N={mom['N']}")
+    if mom.get("k_hat") is None:
+        print(f"      → {mom['reason']}")
+    elif mom["k_hat"] == float("inf"):
+        print(f"      σ²={mom['sigma2']}  τ²={mom['tau2']}  → {mom['reason']}")
+        print(f"      recommendation: shrink heavily (k ≥ 50)")
+    else:
+        print(f"      σ² (within)  = {mom['sigma2']}")
+        print(f"      τ² (between) = {mom['tau2']}")
+        print(f"      k̂ = σ²/τ²    = {mom['k_hat']}")
+
+    print(f"\n  [2] Holdout predictive MSE (50/50 chronological)   K={ho['K']}")
+    if ho.get("k_hat") is None:
+        print(f"      → {ho['reason']}")
+    else:
+        print(f"      k      |  MSE")
+        print(f"      {'─'*7}+{'─'*10}")
+        for k in ho["k_grid"]:
+            marker = "  ← best" if k == ho["k_hat"] else ""
+            print(f"      {k:>6} |  {ho['mse_by_k'][k]:.6f}{marker}")
+        print(f"      → argmin k̂ = {ho['k_hat']}")
+
+    print(f"\n{'─'*72}")
+    # Combined recommendation: prefer holdout when available; fall back to MoM.
+    recommended = None
+    source      = None
+    if ho.get("k_hat") is not None:
+        recommended, source = ho["k_hat"], "holdout"
+    elif mom.get("k_hat") not in (None, float("inf")):
+        recommended, source = mom["k_hat"], "method-of-moments"
+
+    if recommended is None:
+        print(f"  Recommendation: keep SHRINKAGE_K = {SHRINKAGE_K} (not enough data to tune).")
+    else:
+        delta = recommended - SHRINKAGE_K
+        direction = "more shrinkage" if delta > 0 else "less shrinkage"
+        print(f"  Recommendation ({source}): SHRINKAGE_K = {recommended}")
+        if abs(delta) < 1:
+            print(f"  (Current default k={SHRINKAGE_K} is within 1 of the tuned value — no change needed.)")
+        else:
+            print(f"  Δ vs default = {delta:+.2f}  ({direction} than the current default).")
+            print(f"  To apply: update SHRINKAGE_K in BOTH scoring_engine.py and dashboard.py.")
+    print(f"{'═'*72}\n")
+
+
 def print_ranking(top_n: int = 20):
     conn   = get_connection()
     cursor = conn.cursor()
@@ -1426,6 +1671,12 @@ def parse_args():
                         help="Show yearly scores for an analyst (e.g.: --yearly 'Dan Ives')")
     parser.add_argument("--portfolio",  "-p", type=str,  default=None, metavar="ANALYST",
                         help="Simulate portfolio for an analyst (e.g.: --portfolio 'Dan Ives')")
+    parser.add_argument("--tune-k",     action="store_true",
+                        help="Empirically tune SHRINKAGE_K on current data "
+                             "(method-of-moments + holdout predictive MSE). "
+                             "Prints a recommendation; does not modify the default.")
+    parser.add_argument("--tune-min-n", type=int, default=5,
+                        help="Minimum positions per analyst for --tune-k (default 5).")
     return parser.parse_args()
 
 
@@ -1444,6 +1695,9 @@ if __name__ == "__main__":
         conn = get_connection()
         auto_close_expired_positions(conn, dry_run=True)
         conn.close()
+
+    elif args.tune_k:
+        print_shrinkage_tuning(min_n=args.tune_min_n)
 
     elif args.ranking:
         print_ranking(top_n=args.top)
