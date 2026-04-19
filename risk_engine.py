@@ -92,26 +92,36 @@ def score_analyst_asset(
     conn: sqlite3.Connection,
     analyst_id: int,
     asset_id: int,
-    direction: str
+    direction: str,
+    exclude_position_id: Optional[int] = None,
 ) -> dict:
     """
-    Probability based on specific history of this analyst on this asset.
-    Returns score (0–1), n_calls, confidence_weight.
+    Empirical hit rate of this analyst on this specific asset.
+
+    Uses `perf.hit_direction` (binary realized outcome) so AVG is a true
+    probability in [0, 1]. Previously used AVG(perf.direction_score), which
+    is a clipped continuous score, not a probability; E[clipped ratio] is
+    not P(direction correct).
+
+    `exclude_position_id` omits the currently-evaluated position from its
+    own training set to avoid evidence leakage (mostly relevant for bulk
+    scoring of already-stored open positions).
     """
     cursor = conn.cursor()
     cursor.execute(
         """SELECT
-               COUNT(*) AS total,
-               AVG(perf.direction_score) AS avg_dir,
-               AVG(perf.target_score)    AS avg_tgt,
-               SUM(CASE WHEN pos.direction = ? THEN 1 ELSE 0 END) AS same_dir,
-               AVG(CASE WHEN pos.direction = ? THEN perf.direction_score ELSE NULL END) AS avg_dir_same
+               COUNT(*)                                                              AS total,
+               AVG(CAST(perf.hit_direction AS REAL))                                  AS hit_rate,
+               SUM(CASE WHEN pos.direction = ? THEN 1 ELSE 0 END)                     AS same_dir,
+               AVG(CASE WHEN pos.direction = ? THEN CAST(perf.hit_direction AS REAL)
+                        ELSE NULL END)                                                AS hit_rate_same
            FROM performance perf
            JOIN positions pos ON pos.id = perf.position_id
            WHERE pos.analyst_id = ?
              AND pos.asset_id   = ?
-             AND perf.direction_score IS NOT NULL""",
-        (direction, direction, analyst_id, asset_id)
+             AND perf.hit_direction IS NOT NULL
+             AND (? IS NULL OR pos.id <> ?)""",
+        (direction, direction, analyst_id, asset_id, exclude_position_id, exclude_position_id)
     )
     row = cursor.fetchone()
 
@@ -120,12 +130,11 @@ def score_analyst_asset(
     if total == 0:
         return {"score": 0.5, "n": 0, "weight": 0.3, "label": "no history on this asset"}
 
-    avg_dir      = row["avg_dir"]      or 0.5
-    avg_dir_same = row["avg_dir_same"] or avg_dir
+    hit_rate      = row["hit_rate"]      if row["hit_rate"]      is not None else 0.5
+    hit_rate_same = row["hit_rate_same"] if row["hit_rate_same"] is not None else hit_rate
 
-    # Use avg_dir_same (performance on same type of calls — buy/sell)
-    # when there is sufficient data
-    score = avg_dir_same if row["same_dir"] and row["same_dir"] >= 2 else avg_dir
+    # Use direction-specific hit rate when there is sufficient same-direction data
+    score = hit_rate_same if row["same_dir"] and row["same_dir"] >= 2 else hit_rate
 
     # Confidence weight based on data volume
     if total >= MIN_CALLS_CONFIDENT:
@@ -135,7 +144,7 @@ def score_analyst_asset(
     else:
         weight = 0.3
 
-    label = f"{total} hist. calls on this asset | avg dir score: {score:.2f}"
+    label = f"{total} hist. calls on this asset | hit rate: {score:.0%}"
     return {"score": score, "n": total, "weight": weight, "label": label}
 
 
@@ -147,11 +156,16 @@ def score_analyst_sector(
     conn: sqlite3.Connection,
     analyst_id: int,
     sector: str,
-    direction: str
+    direction: str,
+    exclude_position_id: Optional[int] = None,
 ) -> dict:
     """
-    Probability based on analyst's history in the asset's sector.
-    Fallback when there is no history on the specific asset.
+    Empirical hit rate of this analyst in the asset's sector.
+    Fallback when there is no (or little) history on the specific asset.
+
+    Same rationale as score_analyst_asset: uses the binary hit_direction
+    so AVG is a proper probability, and optionally excludes the currently
+    evaluated position to prevent leakage.
     """
     if not sector:
         return {"score": 0.5, "n": 0, "weight": 0.2, "label": "unknown sector"}
@@ -159,16 +173,18 @@ def score_analyst_sector(
     cursor = conn.cursor()
     cursor.execute(
         """SELECT
-               COUNT(*) AS total,
-               AVG(perf.direction_score) AS avg_dir,
-               AVG(CASE WHEN pos.direction = ? THEN perf.direction_score ELSE NULL END) AS avg_dir_same
+               COUNT(*)                                                              AS total,
+               AVG(CAST(perf.hit_direction AS REAL))                                  AS hit_rate,
+               AVG(CASE WHEN pos.direction = ? THEN CAST(perf.hit_direction AS REAL)
+                        ELSE NULL END)                                                AS hit_rate_same
            FROM performance perf
            JOIN positions pos ON pos.id  = perf.position_id
            JOIN assets    a   ON a.id    = pos.asset_id
            WHERE pos.analyst_id = ?
              AND a.sector       = ?
-             AND perf.direction_score IS NOT NULL""",
-        (direction, analyst_id, sector)
+             AND perf.hit_direction IS NOT NULL
+             AND (? IS NULL OR pos.id <> ?)""",
+        (direction, analyst_id, sector, exclude_position_id, exclude_position_id)
     )
     row = cursor.fetchone()
 
@@ -177,8 +193,11 @@ def score_analyst_sector(
     if total == 0:
         return {"score": 0.5, "n": 0, "weight": 0.1, "label": f"no history in {sector}"}
 
-    avg_dir_same = row["avg_dir_same"] or row["avg_dir"] or 0.5
-    score = avg_dir_same
+    score = (
+        row["hit_rate_same"] if row["hit_rate_same"] is not None
+        else row["hit_rate"] if row["hit_rate"] is not None
+        else 0.5
+    )
 
     if total >= MIN_CALLS_CONFIDENT:
         weight = 0.8
@@ -187,7 +206,7 @@ def score_analyst_sector(
     else:
         weight = 0.2
 
-    label = f"{total} calls in {sector} | avg dir score: {score:.2f}"
+    label = f"{total} calls in {sector} | hit rate: {score:.0%}"
     return {"score": score, "n": total, "weight": weight, "label": label}
 
 
@@ -355,7 +374,8 @@ def score_recency(rec_date: Optional[str]) -> dict:
 def score_volatility_fit(
     conn: sqlite3.Connection,
     analyst_id: int,
-    asset_id: int
+    asset_id: int,
+    exclude_position_id: Optional[int] = None,
 ) -> dict:
     """
     Checks if the analyst tends to be more accurate in high or low volatility periods,
@@ -384,7 +404,9 @@ def score_volatility_fit(
         returns = [(closes[i] - closes[i-1]) / closes[i-1] * 100
                    for i in range(1, len(closes))]
         mean_r  = sum(returns) / len(returns)
-        variance = sum((r - mean_r) ** 2 for r in returns) / len(returns)
+        # Unbiased sample variance (Bessel's correction: n-1)
+        variance = (sum((r - mean_r) ** 2 for r in returns) /
+                    (len(returns) - 1)) if len(returns) > 1 else 0.0
         current_vol = math.sqrt(variance)
 
         if current_vol > 2.5:
@@ -398,26 +420,31 @@ def score_volatility_fit(
         return {"score": 0.60, "current_vol": None, "weight": 0.3,
                 "label": "current volatility unknown (no prices)"}
 
-    # Analyst's historical performance in different regimes
-    # Proxy: calls made during periods of greater/lesser movement
+    # Analyst's historical hit rate (binary outcome), not clipped score.
+    # NOTE: this dimension still applies a *uniform* vol-regime multiplier
+    # rather than a regime-conditional hit rate (which the docstring
+    # promises). Proper regime-conditional fitting is out of scope for
+    # this PR and is tracked as a follow-up.
     cursor.execute(
         """SELECT
-               AVG(perf.direction_score) AS avg_dir,
-               COUNT(*) AS total
+               AVG(CAST(perf.hit_direction AS REAL)) AS hit_rate,
+               COUNT(*)                              AS total
            FROM performance perf
            JOIN positions pos ON pos.id = perf.position_id
-           WHERE pos.analyst_id = ? AND perf.direction_score IS NOT NULL""",
-        (analyst_id,)
+           WHERE pos.analyst_id = ?
+             AND perf.hit_direction IS NOT NULL
+             AND (? IS NULL OR pos.id <> ?)""",
+        (analyst_id, exclude_position_id, exclude_position_id)
     )
     overall = cursor.fetchone()
 
-    if not overall or not overall["avg_dir"]:
+    if not overall or overall["hit_rate"] is None:
         return {"score": 0.60, "current_vol": current_vol, "weight": 0.3,
                 "label": f"current vol: {current_vol:.2f}% — insufficient history"}
 
-    # Without detailed vol history, use a simple adjustment:
-    # in high volatility, analysts generally have ~15% less accuracy
-    base_score = overall["avg_dir"]
+    # Without detailed regime-conditional history, apply a simple adjustment:
+    # high volatility historically compresses analyst accuracy by ~15%.
+    base_score = overall["hit_rate"]
 
     if vol_regime == "high":
         adj_score = base_score * 0.85
@@ -466,6 +493,11 @@ def calibrate_probability(dimensions: dict) -> float:
 
     # Platt calibration — smooths extremes (avoids 95%+ or <10%)
     # Mapping: [0, 1] → [0.15, 0.88]
+    # NOTE: this is an affine squeeze, NOT Platt/isotonic calibration.
+    # Platt calibration would fit P = sigmoid(A * raw_prob + B) with
+    # parameters learned from realized (raw_prob, outcome) pairs on a
+    # holdout. Treat the output as an UNCALIBRATED composite signal
+    # until a proper calibration step is added (tracked as follow-up).
     calibrated = 0.15 + (raw_prob * 0.73)
 
     return round(calibrated, 4)
@@ -504,7 +536,8 @@ def evaluate_call(
     price_target: Optional[float] = None,
     rec_date: Optional[str] = None,
     verbose: bool = True,
-    db_path: str = DB_PATH
+    db_path: str = DB_PATH,
+    exclude_position_id: Optional[int] = None,
 ) -> dict:
     """
     Evaluates the risk of a specific call.
@@ -557,7 +590,10 @@ def evaluate_call(
 
     # 1. Analyst × Asset
     if analyst_id and asset_id:
-        dimensions["analyst_asset"] = score_analyst_asset(conn, analyst_id, asset_id, direction)
+        dimensions["analyst_asset"] = score_analyst_asset(
+            conn, analyst_id, asset_id, direction,
+            exclude_position_id=exclude_position_id,
+        )
     else:
         dimensions["analyst_asset"] = {
             "score": 0.5, "n": 0, "weight": 0.1,
@@ -566,7 +602,10 @@ def evaluate_call(
 
     # 2. Analyst × Sector
     if analyst_id and sector:
-        dimensions["analyst_sector"] = score_analyst_sector(conn, analyst_id, sector, direction)
+        dimensions["analyst_sector"] = score_analyst_sector(
+            conn, analyst_id, sector, direction,
+            exclude_position_id=exclude_position_id,
+        )
     else:
         dimensions["analyst_sector"] = {
             "score": 0.5, "n": 0, "weight": 0.1,
@@ -587,7 +626,10 @@ def evaluate_call(
 
     # 6. Volatility
     if analyst_id and asset_id:
-        dimensions["volatility_fit"] = score_volatility_fit(conn, analyst_id, asset_id)
+        dimensions["volatility_fit"] = score_volatility_fit(
+            conn, analyst_id, asset_id,
+            exclude_position_id=exclude_position_id,
+        )
     else:
         dimensions["volatility_fit"] = {"score": 0.60, "weight": 0.2, "label": "insufficient data"}
 
@@ -746,6 +788,9 @@ def calc_all_recent(days: int = 90, db_path: str = DB_PATH):
                 rec_date=pos["open_date"],
                 verbose=False,
                 db_path=db_path,
+                # Exclude this very position from its own training data to
+                # avoid evidence leakage in the "forward" probability estimate.
+                exclude_position_id=pos["id"],
             )
 
             dims = result["dimensions"]
